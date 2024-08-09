@@ -25,16 +25,7 @@ target: Build.ResolvedTarget,
 optimize: std.builtin.OptimizeMode,
 strip: bool,
 units: UnitMap,
-
-pub const MetaInput = union(enum) {
-    Native: void,
-    Generative: *Set,
-};
-
-const Meta = union(enum) {
-    Native: *Build.Dependency,
-    Generative: *Set,
-};
+packages: std.StringHashMap(Package),
 
 pub fn init(
     b: *Build,
@@ -55,6 +46,8 @@ pub fn init(
     set.fileGen = fileGen;
     set.tests = std.ArrayList([]const u8).init(b.allocator);
     set.files = std.ArrayList([]const u8).init(b.allocator);
+    set.units = UnitMap.init(b.allocator);
+    set.packages = std.StringHashMap(Package).init(b.allocator);
 
     set.meta = switch (meta) {
         .Native => .{
@@ -90,12 +83,64 @@ pub fn init(
         },
     }
 
-    set.units = try makeExternMap(set, set.target, set.optimize, packages);
+    inline for (comptime std.meta.fieldNames(@TypeOf(packages))) |packageName| {
+        const packageInfo = @field(packages, packageName);
+        const InfoT = @TypeOf(packageInfo);
 
-    try translateUnits(set);
+        if (comptime InfoT == *Build.Step.Options) {
+            _ = try createUnit(.{
+                .set = set,
+                .name = std.fmt.comptimePrint(":{s}", .{packageName}),
+                .dependencies = &[0][]const u8 {},
+                .data = .{ .Config = packageInfo },
+            });
+            continue;
+        }
 
-    var iter = set.units.keyIterator();
-    while (iter.next()) |unitName| {
+        const package = set.owner.dependency(
+            packageName,
+            ZigTypeUtils.structConcat(.{
+                .{
+                    .target = set.target,
+                    .optimize = set.optimize,
+                },
+                if (@hasField(InfoT, "parameters")) @field(packageInfo, "parameters")
+                else .{}
+            })
+        );
+
+        try set.packages.put(packageName, package);
+
+        const modules = comptime
+            if (@hasField(InfoT, "modules")) @field(packageInfo, "modules")
+            else .{packageName};
+
+        inline for (0..modules.len) |i| {
+            const moduleName = modules[i];
+
+            const namespacedName = comptime
+                if (std.mem.eql(u8, packageName, moduleName)) std.fmt.comptimePrint(":{s}", .{packageName})
+                else std.fmt.comptimePrint(":{s}:{s}", .{packageName, moduleName});
+
+            _ = try createUnit(.{
+                .set = set,
+                .name = namespacedName,
+                .dependencies = &[0][]const u8 {},
+                .data = .{ .Dependency = .{
+                    .build = package.module(moduleName),
+                    .package = package,
+                } },
+            });
+        }
+    }
+
+    var treeIter = set.tree.keyIterator();
+    while (treeIter.next()) |nodeName| {
+        _ = try acquireUnit(set, nodeName.*);
+    }
+
+    var unitIter = set.units.keyIterator();
+    while (unitIter.next()) |unitName| {
         const unit = set.units.get(unitName.*).?;
 
         std.debug.assert(!unit.isUninit());
@@ -108,17 +153,23 @@ pub fn init(
     return set;
 }
 
+pub fn getHeader(self: *const Set, headerName: []const u8) !File {
+    const headerUnitName = try std.fmt.allocPrint(self.owner.allocator, HEADER_PREFIX ++ "{s}", .{headerName});
+
+    return self.getFile(headerUnitName);
+}
+
 pub fn getFile(self: *const Set, unitName: []const u8) !File {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
             .File => |x| return x,
             else => {
-                log.err("expected unit `{s}` to be an artifact, got {s}", .{unitName, @tagName(unit.data)});
+                log.err("expected unit `{s}` to be a file unit, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
             }
         }
     } else {
-        log.err("cannot find artifact unit `{s}`", .{unitName});
+        log.err("cannot find file unit `{s}`", .{unitName});
         return error.MissingFile;
     }
 }
@@ -183,6 +234,13 @@ pub fn getLibrary(self: *const Set, unitName: []const u8) !Library {
     }
 }
 
+pub fn getPackage(self: *const Set, packageName: []const u8) !Package {
+    return self.packages.get(packageName) orelse {
+        log.err("cannot find package `{s}`", .{packageName});
+        return error.MissingPackage;
+    };
+}
+
 pub fn getDependency(self: *const Set, unitName: []const u8) !Dependency {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
@@ -219,10 +277,21 @@ pub fn findUnit(self: *const Set, unitName: []const u8) ?*Unit {
     return self.units.get(unitName);
 }
 
-pub fn getTemplater(self: *Set) !Binary {
+pub fn getLibJoiner(self: *Set) Binary {
     switch (self.meta) {
         .Generative => |set| {
-            return try set.getTemplater();
+            return set.getLibJoiner();
+        },
+        .Native => |builder| {
+            return builder.artifact("libjoiner");
+        },
+    }
+}
+
+pub fn getTemplater(self: *Set) Binary {
+    switch (self.meta) {
+        .Generative => |set| {
+            return set.getTemplater();
         },
         .Native => |builder| {
             return builder.artifact("templater");
@@ -386,12 +455,24 @@ pub const Binary = *Build.Step.Compile;
 
 pub const Dependency = struct {
     build: *Build.Module,
-    package: *Build.Dependency,
+    package: Package,
 };
 
 pub const Config = *Build.Step.Options;
 
 pub const File = Build.LazyPath;
+
+pub const MetaInput = union(enum) {
+    Native: void,
+    Generative: *Set,
+};
+
+const Meta = union(enum) {
+    Native: Package,
+    Generative: *Set,
+};
+
+pub const Package = *Build.Dependency;
 
 pub const BuildStyle = union(enum) {
     Test: void,
@@ -414,79 +495,13 @@ pub const StandardBuild = struct {
     strip: bool,
 };
 
-fn createUnitIn(map: *UnitMap, unit: Unit) anyerror!*Unit {
-    if (map.contains(unit.name)) return error.DuplicateUnit;
-    const outUnit = try map.allocator.create(Unit);
-    try map.put(unit.name, outUnit);
-    outUnit.* = unit;
-    return outUnit;
-}
 
 fn createUnit(unit: Unit) anyerror!*Unit {
-    return createUnitIn(&unit.set.units, unit);
-}
-
-
-fn makeExternMap(set: *Set, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, packages: anytype) anyerror!UnitMap {
-    var map = UnitMap.init(set.owner.allocator);
-
-    inline for (comptime std.meta.fieldNames(@TypeOf(packages))) |packageName| {
-        const packageInfo = @field(packages, packageName);
-        const InfoT = @TypeOf(packageInfo);
-
-        if (comptime InfoT == *Build.Step.Options) {
-            _ = try createUnitIn(&map, .{
-                .set = set,
-                .name = std.fmt.comptimePrint(":{s}", .{packageName}),
-                .dependencies = &[0][]const u8 {},
-                .data = .{ .Config = packageInfo },
-            });
-            continue;
-        }
-
-        const package = set.owner.dependency(
-            packageName,
-            ZigTypeUtils.structConcat(.{
-                .{
-                    .target = target,
-                    .optimize = optimize,
-                },
-                if (@hasField(InfoT, "parameters")) @field(packageInfo, "parameters")
-                else .{}
-            })
-        );
-
-        const modules = comptime
-            if (@hasField(InfoT, "modules")) @field(packageInfo, "modules")
-            else .{packageName};
-
-        inline for (0..modules.len) |i| {
-            const moduleName = modules[i];
-
-            const namespacedName = comptime
-                if (std.mem.eql(u8, packageName, moduleName)) std.fmt.comptimePrint(":{s}", .{packageName})
-                else std.fmt.comptimePrint(":{s}:{s}", .{packageName, moduleName});
-
-            _ = try createUnitIn(&map, .{
-                .set = set,
-                .name = namespacedName,
-                .dependencies = &[0][]const u8 {},
-                .data = .{ .Dependency = .{
-                    .build = package.module(moduleName),
-                    .package = package,
-                } },
-            });
-        }
-    }
-
-    return map;
-}
-
-fn translateUnits(set: *Set) anyerror!void {
-    var iter = set.tree.keyIterator();
-    while (iter.next()) |nodeName| {
-        _ = try acquireUnit(set, nodeName.*);
-    }
+    if (unit.set.units.contains(unit.name)) return error.DuplicateUnit;
+    const outUnit = try unit.set.units.allocator.create(Unit);
+    try unit.set.units.put(unit.name, outUnit);
+    outUnit.* = unit;
+    return outUnit;
 }
 
 fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
@@ -505,7 +520,7 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
 
     var path = set.owner.path(node.path);
     if (node.templateParams) |templateParams| {
-        const templater = try set.getTemplater();
+        const templater = set.getTemplater();
 
         const runTemplater = set.owner.addRunArtifact(templater);
 
