@@ -3,7 +3,8 @@
     .version = "0.1.0",
     .dependencies = .{
         .ZigTypeUtils = .{
-            .path = "../zig-type-utils",
+            .url = "https://github.com/noxabellus/zig-type-utils/archive/f6786ead6902ae8d68a1387a2fda8b56d85c92ca.tar.gz",
+            .hash = "12205ea31185e6e2205a0a139e23787f1ad86ec2eb031320a66f1a2815260d8e1123",
         },
     },
     .paths = .{
