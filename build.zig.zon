@@ -1,0 +1,16 @@
+.{
+    .name = "zig-builder",
+    .version = "0.1.0",
+    .dependencies = .{
+        .ZigTypeUtils = .{
+            .path = "../zig-type-utils",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
