@@ -393,7 +393,6 @@ pub fn instantiateWith(allocator: std.mem.Allocator, templateFileName: []const u
 
             try ctx.instantiation.appendSlice(text);
 
-            // TODO: support leading non-space characters on the line
             var lineStart = text.len - 1;
             while (lineStart > 0) {
                 const byte = text[lineStart];

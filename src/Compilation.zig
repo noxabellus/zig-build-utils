@@ -499,8 +499,7 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
         const runTemplater = set.owner.addRunArtifact(templater);
 
         for (templateData.deps) |dep| {
-            // HACK
-            {
+            { // HACK
                 // this is a workaround for the fact that you cannot currently add
                 // directories as fileInputs to a run artifact
                 const stat = std.fs.cwd().statFile(dep) catch |err| {
