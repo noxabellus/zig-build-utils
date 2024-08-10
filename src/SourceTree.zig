@@ -52,7 +52,6 @@ pub const EntryKind = enum {
 };
 
 
-
 pub const Entry = struct {
     parent: ?[]const u8,
     vis: EntryVis,
@@ -63,10 +62,10 @@ pub const Entry = struct {
     hasHeaderGenData: bool,
     files: std.ArrayList([]const u8),
     dependencies: std.ArrayList([]const u8),
-    templateParams: ?[]const []const u8,
+    templateData: ?Templater.Data,
 
     pub fn isTemplate(self: Entry) bool {
-        return self.templateParams != null;
+        return self.templateData != null;
     }
 
     pub fn format(self: Entry, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -101,11 +100,22 @@ pub const Entry = struct {
             try writer.writeAll("]\n");
         }
 
-        if (self.templateParams) |deps| {
-            try writer.writeAll("    template dependencies: [");
-            if (deps.len > 0) {
+        if (self.templateData) |data| {
+            try writer.writeAll("    template params: [");
+            if (data.params.len > 0) {
                 try writer.writeAll("\n");
-                for (deps) |dep| {
+                for (data.params) |param| {
+                    try writer.print("        {s}\n", .{param});
+                }
+                try writer.writeAll("    ]\n");
+            } else {
+                try writer.writeAll("]\n");
+            }
+
+            try writer.writeAll("    template deps: [");
+            if (data.deps.len > 0) {
+                try writer.writeAll("\n");
+                for (data.deps) |dep| {
                     try writer.print("        {s}\n", .{dep});
                 }
                 try writer.writeAll("    ]\n");
@@ -301,7 +311,7 @@ fn traverse(
                     .parent = if (parentEntry) |p| p.name else null,
                     .vis = t.Base.vis,
                     .name = name,
-                    .templateParams = null,
+                    .templateData = null,
                     .kind = t.Base.kind,
                     .hasTests = hasTests,
                     .hasHeaderGenData = hasHeaderGenData,
@@ -311,8 +321,8 @@ fn traverse(
                 };
 
                 if (isTemplatePath(subPath)) {
-                    entry.templateParams = Templater.queryParameters(rootMap.allocator, filePath) catch |err| {
-                        log.err("Could not get template parameters for file [{s}], error `{s}`", .{ filePath, @errorName(err) });
+                    entry.templateData = Templater.queryData(rootMap.allocator, filePath) catch |err| {
+                        log.err("Could not get template data for file [{s}], error `{s}`", .{ filePath, @errorName(err) });
                         return err;
                     };
                 }
@@ -438,7 +448,7 @@ fn processBaseFile(rootMap: *Map, parentEntry: ?*Entry, super: []const u8, vis: 
         .parent = if (parentEntry) |p| p.name else null,
         .vis = vis,
         .kind = kind,
-        .templateParams = null,
+        .templateData = null,
         .name = name,
         .path = filePath,
         .hasTests = hasTests,
@@ -448,7 +458,7 @@ fn processBaseFile(rootMap: *Map, parentEntry: ?*Entry, super: []const u8, vis: 
     };
 
     if (isTemplatePath(fileName)) {
-        entry.templateParams = Templater.queryParameters(rootMap.allocator, filePath) catch |err| {
+        entry.templateData = Templater.queryData(rootMap.allocator, filePath) catch |err| {
             log.err("Could not get template parameters for file [{s}], error {s}", .{ filePath, @errorName(err) });
             return err;
         };

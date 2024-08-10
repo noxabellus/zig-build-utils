@@ -6,7 +6,8 @@ pub const std_options = std.Options {
 
 const log = std.log.scoped(.templater);
 
-pub var START_MARKER = "#";
+pub var DEP_MARKER: u8 = '%';
+pub var PARAM_MARKER: u8 = '#';
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -140,51 +141,40 @@ pub fn getMarkers(templateFileName: []const u8) !Markers {
 }
 
 
-pub fn queryParameters(allocator: std.mem.Allocator, templateFileName: []const u8) anyerror![]const []const u8 {
+pub const Data = struct {
+    deps: []const []const u8,
+    params: []const []const u8,
+};
+
+pub fn queryData(allocator: std.mem.Allocator, templateFileName: []const u8) anyerror!Data {
     const QueryCtx = struct {
+        deps: std.ArrayList([]const u8),
         params: std.StringArrayHashMap(void),
+
         const Self = @This();
+
         fn onText(_: *Self, _: []const u8) anyerror!void {}
+        fn onDep(ctx: *Self, arguments: []const []const u8) anyerror!void {
+            for (arguments) |dep| {
+                try ctx.deps.append(dep);
+            }
+        }
         fn onParam(ctx: *Self, arguments: []const []const u8) anyerror!void {
             try ctx.params.put(arguments[0], {});
         }
     };
 
     var ctx = QueryCtx {
+        .deps = std.ArrayList([]const u8).init(allocator),
         .params = std.StringArrayHashMap(void).init(allocator),
     };
 
     try iterate(allocator, templateFileName, &ctx);
 
-    return ctx.params.keys();
-}
-
-
-pub fn queryCalls(allocator: std.mem.Allocator, templateFileName: []const u8) anyerror![]const []const u8 {
-    const QueryCtx = struct {
-        allocator: std.mem.Allocator,
-        calls: std.ArrayList([]const u8),
-        const Self = @This();
-        fn onText(_: *Self, _: []const u8) anyerror!void {}
-        fn onParam(ctx: *Self, arguments: []const []const u8) anyerror!void {
-            var call = arguments[0];
-
-            for (arguments[1..]) |arg| {
-                call = try std.fmt.allocPrint(ctx.allocator, "{s} {s}", .{call, arg});
-            }
-
-            try ctx.calls.append(call);
-        }
+    return .{
+        .deps = ctx.deps.items,
+        .params = ctx.params.keys(),
     };
-
-    var ctx = QueryCtx {
-        .allocator = allocator,
-        .calls = std.ArrayList([]const u8).init(allocator),
-    };
-
-    try iterate(allocator, templateFileName, &ctx);
-
-    return ctx.calls.items;
 }
 
 
@@ -426,6 +416,8 @@ pub fn instantiateWith(allocator: std.mem.Allocator, templateFileName: []const u
             ctx.lastIndent = indent;
         }
 
+        fn onDep(_: *Self, _: []const []const u8) anyerror!void { }
+
         fn onParam(ctx: *Self, arguments: []const []const u8) anyerror!void {
             const prelimInstantiation: []const u8 = try ctx.user.onParam(arguments);
 
@@ -490,24 +482,41 @@ pub fn iterate(
 
     const template = try templateFile.reader().readAllAlloc(allocator, std.math.maxInt(usize));
 
-    const startMarker = try std.fmt.allocPrint(allocator, "{s}{s}", .{markers.start, START_MARKER});
+    const depMarker = try std.fmt.allocPrint(allocator, "{s}{u}", .{markers.start, DEP_MARKER});
+    const paramMarker = try std.fmt.allocPrint(allocator, "{s}{u}", .{markers.start, PARAM_MARKER});
 
     var argumentBuffer = std.ArrayList([]const u8).init(allocator);
 
     var i: usize = 0;
-    while (i < template.len) {
+    templateLoop: while (i < template.len) {
         const iStart = i;
 
-        const startOffset = std.mem.indexOf(u8, template[i..], startMarker) orelse {
-            try ctx.onText(template[i..]);
-            break;
+        const depOffset = std.mem.indexOf(u8, template[i..], depMarker);
+        const paramOffset = std.mem.indexOf(u8, template[i..], paramMarker);
+
+        const Kind = enum { dep, param };
+        const start: struct {Kind, usize} = start: {
+            if (depOffset != null and paramOffset != null) {
+                const dep = depOffset.?;
+                const param = paramOffset.?;
+                if (dep < param) {
+                    break :start .{.dep, dep};
+                } else if (param < dep) {
+                    break :start .{.param, param};
+                } else unreachable;
+            } else if (depOffset orelse paramOffset) |o| {
+                break :start .{if (depOffset == null) .param else .dep, o};
+            } else {
+                try ctx.onText(template[i..]);
+                break :templateLoop;
+            }
         };
 
-        i += startOffset;
+        i += start[1];
 
         try ctx.onText(template[iStart..i]);
 
-        i += startMarker.len;
+        i += markers.start.len + 1;
 
         const endOffset = std.mem.indexOf(u8, template[i..], markers.end) orelse {
             log.err("No end marker found after offset {}\n", .{i});
@@ -529,11 +538,14 @@ pub fn iterate(
         }
 
         if (argumentBuffer.items.len == 0) {
-            log.err("Empty template parameter at offset {}\n", .{i});
+            log.err("Empty template {s} at offset {}\n", .{@tagName(start[0]), i});
             return error.EmptyTemplateParameter;
         }
 
-        try ctx.onParam(argumentBuffer.items);
+        switch (start[0]) {
+            .dep => try ctx.onDep(argumentBuffer.items),
+            .param => try ctx.onParam(argumentBuffer.items),
+        }
 
         argumentBuffer.clearRetainingCapacity();
     }

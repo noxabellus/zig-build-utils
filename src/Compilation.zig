@@ -493,17 +493,36 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
     });
 
     var path = set.owner.path(node.path);
-    if (node.templateParams) |templateParams| {
+    if (node.templateData) |templateData| {
         const templater = set.getTemplater();
 
         const runTemplater = set.owner.addRunArtifact(templater);
+
+        for (templateData.deps) |dep| {
+            // HACK
+            {
+                // this is a workaround for the fact that you cannot currently add
+                // directories as fileInputs to a run artifact
+                const stat = std.fs.cwd().statFile(dep) catch |err| {
+                    log.err("cannot stat template dependency `{s}` for template `{s}`, error {s}", .{dep, node.path, @errorName(err)});
+                    return err;
+                };
+
+                if (stat.kind != .file) {
+                    runTemplater.has_side_effects = true;
+                    break;
+                }
+            }
+
+            runTemplater.addFileInput(set.owner.path(dep));
+        }
 
         runTemplater.addFileInput(path);
         runTemplater.addArg(node.path);
 
         runTemplater.addArg("-no-static");
 
-        for (templateParams) |binaryName| {
+        for (templateData.params) |binaryName| {
             const bin = try acquireTemplaterBinary(set, binaryName);
 
             runTemplater.addArg(binaryName);
