@@ -31,10 +31,8 @@ pub fn init(
     b: *Build,
     name: []const u8,
     tree: *const SourceTree.Map,
-    meta: MetaInput,
-    fileGen: bool,
-    buildStyle: BuildStyle,
     packages: anytype,
+    details: BuildDetails,
 ) anyerror!*Set {
     const set = try b.allocator.create(Set);
     const nativeTarget = b.resolveTargetQuery(.{});
@@ -42,14 +40,14 @@ pub fn init(
     set.owner = b;
     set.name = name;
     set.tree = tree;
-    set.isTest = false;
-    set.fileGen = fileGen;
+    set.isTest = details.tests;
+    set.fileGen = details.fileGen;
     set.tests = std.ArrayList([]const u8).init(b.allocator);
     set.files = std.ArrayList([]const u8).init(b.allocator);
     set.units = UnitMap.init(b.allocator);
     set.packages = std.StringHashMap(Package).init(b.allocator);
 
-    set.meta = switch (meta) {
+    set.meta = switch (details.meta) {
         .Native => .{
             .Native = b.dependency("ZigBuilder", .{
                 .target = nativeTarget,
@@ -61,27 +59,14 @@ pub fn init(
         },
     };
 
-    switch (buildStyle) {
-        .Standard => |standard| {
-            set.vis = standard.vis;
-            set.triple = try standard.target.query.zigTriple(b.allocator);
-            std.debug.assert( meta == .Generative
-                           or std.mem.eql(u8, set.triple, try nativeTarget.query.zigTriple(b.allocator))
-                            );
-            set.target = standard.target;
-            set.optimize = standard.optimize;
-            set.strip = standard.strip;
-        },
-
-        .Test => {
-            set.vis = .Private;
-            set.triple = try nativeTarget.query.zigTriple(b.allocator);
-            set.target = nativeTarget;
-            set.optimize = .Debug;
-            set.strip = false;
-            set.isTest = true;
-        },
-    }
+    set.vis = details.vis;
+    set.triple = try details.target.query.zigTriple(b.allocator);
+    std.debug.assert( details.meta == .Generative
+                   or std.mem.eql(u8, set.triple, try nativeTarget.query.zigTriple(b.allocator))
+                   );
+    set.target = details.target;
+    set.optimize = details.optimize;
+    set.strip = details.strip;
 
     inline for (comptime std.meta.fieldNames(@TypeOf(packages))) |packageName| {
         const packageInfo = @field(packages, packageName);
@@ -474,25 +459,14 @@ const Meta = union(enum) {
 
 pub const Package = *Build.Dependency;
 
-pub const BuildStyle = union(enum) {
-    Test: void,
-    Standard: StandardBuild,
-
-    pub fn standard(vis: UnitVisibility, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, strip: bool) BuildStyle {
-        return .{ .Standard = .{
-            .vis = vis,
-            .target = target,
-            .optimize = optimize,
-            .strip = strip,
-        } };
-    }
-};
-
-pub const StandardBuild = struct {
+pub const BuildDetails = struct {
+    meta: MetaInput,
     vis: UnitVisibility,
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     strip: bool,
+    fileGen: bool,
+    tests: bool,
 };
 
 
