@@ -554,7 +554,12 @@ fn getDependencies(src: []const u8, deps: *std.ArrayList([]const u8)) anyerror!v
     var i: usize = 0;
     while (i < src.len) {
         var subStr = src[i..];
+
         if (std.mem.indexOf(u8, subStr, BEGIN_IMPORT)) |j| {
+            const lineStart = getLineStart(src, i + j);
+
+            var shouldIgnore = ignoreLine(lineStart);
+
             subStr = subStr[j + BEGIN_IMPORT.len ..];
 
             const k = std.mem.indexOf(u8, subStr, END_IMPORT) orelse {
@@ -563,7 +568,9 @@ fn getDependencies(src: []const u8, deps: *std.ArrayList([]const u8)) anyerror!v
 
             subStr = subStr[0..k];
 
-            if (!ignoreImport(subStr)) {
+            shouldIgnore = ignoreImport(subStr) or shouldIgnore;
+
+            if (!shouldIgnore) {
                 const dep = try deps.allocator.dupe(u8, subStr);
                 try deps.append(dep);
             }
@@ -571,6 +578,21 @@ fn getDependencies(src: []const u8, deps: *std.ArrayList([]const u8)) anyerror!v
             i += BEGIN_IMPORT.len + j + k + END_IMPORT.len;
         } else break;
     }
+}
+
+fn ignoreLine(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "//") != null   // ignore comment
+        or std.mem.indexOf(u8, line, "\\\\") != null // ignore multiline string
+        or std.mem.startsWith(u8, line, "#!");       // ignore shebang
+}
+
+fn getLineStart(src: []const u8, i: usize) []const u8 {
+    var j = i;
+    while (j > 0 and src[j - 1] != '\n') {
+        j -= 1;
+    }
+
+    return src[j..i];
 }
 
 fn parseIgnore(src: []const u8, ignore: *std.StringHashMap(void)) anyerror!void {
@@ -698,7 +720,9 @@ fn hasUsableFileExtension(path: []const u8) bool {
 }
 
 fn ignoreImport(path: []const u8) bool {
-    return isStandardImport(path) or isLocalFile(path);
+    return isStandardImport(path)
+        or isLocalFile(path)
+        ;
 }
 
 fn isLowerStr(str: []const u8) bool {
