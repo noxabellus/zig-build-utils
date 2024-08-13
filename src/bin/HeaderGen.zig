@@ -424,6 +424,8 @@ fn translatePrimitiveType(allocator: std.mem.Allocator, slice: []const u8) ![]co
     } else if (strCase(slice, .{ "u8", "u16", "u32", "u64" })) {
         const size = slice[1..];
         return try std.fmt.allocPrint(allocator, "uint{s}_t", .{size});
+    } else if (strCase(slice, .{"anyopaque"})) {
+        return "void";
     } else {
         log.err("unrecognized type `{s}`", .{slice});
         return error.UnrecognizedType;
