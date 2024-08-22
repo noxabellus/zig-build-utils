@@ -4,7 +4,7 @@ const ZigType = builtin.Type;
 const zig = std.zig;
 
 pub const std_options = std.Options {
-    .log_level = .warn,
+    .log_level = .info,
 };
 
 const log = std.log.scoped(.headergen);
@@ -179,7 +179,7 @@ const Member = union(enum) {
                     .Custom => {
                         try writer.print("{comment}", .{x.location});
                         const t = generator.customTypes.get(x.name) orelse {
-                            log.err("error {}: type {s} not found in custom type table", .{ x.location, x.name });
+                            log.err("{}: type {s} not found in custom type table", .{ x.location, x.name });
                             return error.CustomTypeNotFound;
                         };
                         try t.render(x.name, generator, writer);
@@ -188,7 +188,12 @@ const Member = union(enum) {
                     .Extern => {
                         try writer.print("{comment}", .{x.location});
                         const t = generator.lookupType(x.name) orelse {
-                            log.err("error {}: type {s} not found in generator table", .{ x.location, x.name });
+                            log.err("{}: type {s} not found in generator table", .{ x.location, x.name });
+                            var iter = generator.nameToId.keyIterator();
+                            log.err("available names:", .{});
+                            while (iter.next()) |key| {
+                                log.err("{s}", .{key.*});
+                            }
                             return error.ExternTypeNotFound;
                         };
                         try t.renderDecl(generator, writer);
@@ -491,9 +496,22 @@ const TypeId = enum(u48) {
     }
 
     fn render(self: TypeId, gen: *const Generator, writer: anytype) !void {
-        const ty = gen.idToType.get(self) orelse unreachable;
+        const ty = gen.idToType.get(self).?;
         try ty.render(gen, writer);
     }
+
+    const Map = std.HashMap(TypeId, Type, TypeId.MapContext, 80);
+
+    const MapContext = struct {
+        pub fn hash(_: MapContext, id: TypeId) u64 {
+            const bytes: u64 = @intFromEnum(id);
+            return std.hash.Fnv1a_64.hash(@as([*]const u8, @ptrCast(&bytes))[0..8]);
+        }
+
+        pub fn eql(_: MapContext, a: TypeId, b: TypeId) bool {
+            return a == b;
+        }
+    };
 };
 
 const Type = struct {
@@ -505,15 +523,16 @@ const Type = struct {
         if (self.declName) |dn| switch (self.info) {
             .Function => {
                 try writer.writeAll("typedef ");
-                try self.info.renderDecl(dn, gen, writer);
+                try self.info.renderDecl(dn, self.zigName, gen, writer);
                 try writer.writeAll(";");
             },
             else => {
                 try writer.writeAll("typedef ");
-                try self.info.renderDecl(dn, gen, writer);
+                try self.info.renderDecl(dn, self.zigName, gen, writer);
                 try writer.print(" {s};", .{dn});
             },
         } else {
+            log.err("no decl name for type {s}", .{self.zigName});
             return error.InvalidDecl;
         }
     }
@@ -522,7 +541,7 @@ const Type = struct {
         if (self.declName) |dn| {
             try writer.writeAll(dn);
         } else {
-            try self.info.render(gen, writer);
+            try self.info.render(self.zigName, gen, writer);
         }
     }
 };
@@ -547,6 +566,7 @@ const TypeInfo = union(enum) {
     Pointer: TypeId,
     Function: Function,
     Primitive: []const u8,
+    Unusable: void,
 
     const Struct = struct {
         packType: ?TypeId,
@@ -563,11 +583,11 @@ const TypeInfo = union(enum) {
         params: []const TypeId,
     };
 
-    fn render(self: TypeInfo, gen: *const Generator, writer: anytype) anyerror!void {
-        return self.renderDecl(null, gen, writer);
+    fn render(self: TypeInfo, zigName: []const u8, gen: *const Generator, writer: anytype) anyerror!void {
+        return self.renderDecl(null, zigName, gen, writer);
     }
 
-    fn renderDecl(self: TypeInfo, name: ?[]const u8, gen: *const Generator, writer: anytype) anyerror!void {
+    fn renderDecl(self: TypeInfo, name: ?[]const u8, zigName: []const u8, gen: *const Generator, writer: anytype) anyerror!void {
         switch (self) {
             .Enum => |x| {
                 try if (name) |n| writer.print("enum {s} {{", .{n}) else writer.writeAll("enum {");
@@ -575,7 +595,7 @@ const TypeInfo = union(enum) {
                 if (if (name) |n| gen.enumSuffixes.get(n) orelse null else null) |suffix| {
                     for (x) |variantName| {
                         const upper = toUpperStr(gen.allocator, variantName) catch |err| {
-                            log.err("cannot convert variant name {s} to upper case, error {}", .{variantName, err});
+                            log.err("cannot convert variant name {s} to upper case, {}", .{variantName, err});
                             return err;
                         };
                         try writer.print("    {s}{s}_{s},\n", .{ gen.prefix, upper, suffix });
@@ -583,7 +603,7 @@ const TypeInfo = union(enum) {
                 } else {
                     for (x) |variantName| {
                         const upper = toUpperStr(gen.allocator, variantName) catch |err| {
-                            log.err("cannot convert variant name {s} to upper case, error {}", .{variantName, err});
+                            log.err("cannot convert variant name {s} to upper case, {}", .{variantName, err});
                             return err;
                         };
                         try writer.print("    {s}{s},\n", .{ gen.prefix, upper });
@@ -628,6 +648,10 @@ const TypeInfo = union(enum) {
                 try writer.writeAll(")");
             },
             .Primitive => |x| try writer.print("{s}", .{x}),
+            .Unusable => {
+                log.err("unusable type info for {s}", .{name orelse zigName});
+                return error.InvalidType;
+            }
         }
     }
 };
@@ -645,14 +669,12 @@ fn HeaderGenerator(comptime Module: type) type {
         ignoredDecls: std.StringHashMap(void),
         path: []const u8,
         nameToId: std.StringHashMap(TypeId),
-        idToType: std.AutoHashMap(TypeId, Type),
+        idToType: TypeId.Map,
         head: []const u8,
         foot: []const u8,
         prefix: []const u8,
         enumSuffixes: std.StringHashMap([]const u8),
         customTypes: std.StringHashMap(CustomType),
-        errorStack: std.ArrayList([]const u8),
-
         const Self = @This();
 
         const CustomType = GENERATION_DATA.CustomType;
@@ -664,39 +686,18 @@ fn HeaderGenerator(comptime Module: type) type {
             };
         }
 
-        fn isEmitableType(comptime T: type) bool {
-            return switch (@typeInfo(T)) {
-                .Void,
-                .Bool,
-                .Opaque,
-                => true,
-
-                .Int => |t| t.bits == 8 or t.bits == 16 or t.bits == 32 or t.bits == 64,
-                .Float => |t| t.bits == 32 or t.bits == 64,
-                .Fn => |t| t.calling_convention == .C,
-                .Struct => |t| t.layout == .@"extern" or t.layout == .@"packed",
-                .Union => |t| t.layout == .@"extern" and t.tag_type == null,
-                .Enum => |t| t.is_exhaustive and isValidTag(t.tag_type),
-                .Pointer => |t| isEmitableType(t.child) and t.size != .Slice,
-                .Optional => |t| @typeInfo(t.child) == .Pointer,
-
-                else => false,
-            };
-        }
-
         fn init(allocator: std.mem.Allocator) !Self {
             var self = Self{
                 .allocator = allocator,
                 .ignoredDecls = std.StringHashMap(void).init(allocator),
                 .path = GENERATION_DATA.source,
                 .nameToId = std.StringHashMap(TypeId).init(allocator),
-                .idToType = std.AutoHashMap(TypeId, Type).init(allocator),
+                .idToType = TypeId.Map.init(allocator),
                 .head = GENERATION_DATA.head,
                 .foot = GENERATION_DATA.foot,
                 .prefix = GENERATION_DATA.prefix,
                 .enumSuffixes = std.StringHashMap([]const u8).init(allocator),
                 .customTypes = std.StringHashMap(CustomType).init(allocator),
-                .errorStack = std.ArrayList([]const u8).init(allocator),
             };
 
             try self.ignoredDecls.put("std_options", {});
@@ -717,19 +718,12 @@ fn HeaderGenerator(comptime Module: type) type {
             inline for (S.decls) |decl| {
                 const T = @field(Module, decl.name);
 
-                if (@TypeOf(T) != type) continue;
+                if (@TypeOf(T) != type) {
+                    continue;
+                }
 
-                if (isEmitableType(T)) {
-                    self.errorStack.append(decl.name) catch unreachable;
-                    defer self.errorStack.clearRetainingCapacity();
-                    _ = self.genTypeDecl(decl.name, T) catch |err| {
-                        log.err("error: {}", .{err});
-                        log.err("error stack:", .{});
-                        for (self.errorStack.items) |ty| {
-                            log.err("    {s}", .{ty});
-                        }
-                        return err;
-                    };
+                if (!self.ignoredDecls.contains(decl.name)) {
+                    _ = try self.genTypeDecl(decl.name, T);
                 }
             }
 
@@ -747,16 +741,30 @@ fn HeaderGenerator(comptime Module: type) type {
 
         fn genTypeDecl(self: *Self, declName: ?[]const u8, comptime T: type) !TypeId {
             const zigName = @typeName(T);
-            self.errorStack.append(zigName) catch unreachable;
-
-            var err = false;
-            defer if (!err) {
-                _ = self.errorStack.pop();
-            };
-            errdefer err = true;
 
             const id = TypeId.of(T);
-            if (self.idToType.contains(id)) return id;
+
+            if (declName) |dn| {
+                if (self.nameToId.get(dn)) |eid| {
+                    std.debug.assert(eid == id);
+                    return id;
+                }
+                try self.nameToId.put(dn, id);
+            }
+
+            if (self.idToType.getPtr(id)) |t| {
+                if (declName) |dn| {
+                    if (t.declName) |edn| {
+                        std.debug.assert(std.mem.eql(u8, edn, dn));
+                    } else {
+                        t.declName = dn;
+                    }
+                }
+
+                return id;
+            }
+
+            try self.idToType.put(id, Type {.declName = declName, .zigName = zigName, .info = .Unusable});
 
             const info = try self.genTypeInfo(T);
             const ty = Type{
@@ -766,11 +774,6 @@ fn HeaderGenerator(comptime Module: type) type {
             };
 
             try self.idToType.put(id, ty);
-
-            if (declName) |dn| {
-                std.debug.assert(!self.nameToId.contains(dn));
-                try self.nameToId.put(dn, id);
-            }
 
             return id;
         }
@@ -799,36 +802,36 @@ fn HeaderGenerator(comptime Module: type) type {
                             16 => TypeInfo{ .Primitive = "int16_t" },
                             32 => TypeInfo{ .Primitive = "int32_t" },
                             64 => TypeInfo{ .Primitive = "int64_t" },
-                            else => return error.InvalidType,
+                            else => return .Unusable,
                         },
                         .unsigned => switch (x.bits) {
                             8 => TypeInfo{ .Primitive = "uint8_t" },
                             16 => TypeInfo{ .Primitive = "uint16_t" },
                             32 => TypeInfo{ .Primitive = "uint32_t" },
                             64 => TypeInfo{ .Primitive = "uint64_t" },
-                            else => return error.InvalidType,
+                            else => return .Unusable,
                         },
                     },
                     .Float => |x| switch (x.bits) {
                         32 => TypeInfo{ .Primitive = "float" },
                         64 => TypeInfo{ .Primitive = "double" },
-                        else => return error.InvalidType,
+                        else => return .Unusable,
                     },
                     .Opaque => TypeInfo{ .Opaque = {} },
                     .Fn => |x| fun: {
-                        if (x.calling_convention != .C) return error.InvalidType;
+                        if (x.calling_convention != .C) return .Unusable;
 
-                        const returnType = try self.genType(x.return_type orelse return error.InvalidType);
+                        const returnType = try self.genType(x.return_type orelse return .Unusable);
 
-                        var paramTypes = std.ArrayList(Type).init(self.allocator);
+                        var paramTypes = std.ArrayList(TypeId).init(self.allocator);
                         inline for (x.params) |param| {
-                            try paramTypes.append(try self.genType(param.type orelse return error.InvalidType));
+                            try paramTypes.append(try self.genType(param.type orelse return .Unusable));
                         }
 
                         break :fun TypeInfo{ .Function = .{ .returnType = returnType, .params = paramTypes.items } };
                     },
                     .Struct => |x| str: {
-                        if (x.layout != .@"extern" and x.layout != .@"packed") return error.InvalidType;
+                        if (x.layout != .@"extern" and x.layout != .@"packed") return .Unusable;
 
                         var fields = std.ArrayList(TypeInfo.Field).init(self.allocator);
                         inline for (x.fields) |field| {
@@ -845,8 +848,8 @@ fn HeaderGenerator(comptime Module: type) type {
                         } };
                     },
                     .Union => |x| un: {
-                        if (x.layout != .@"extern") return error.InvalidType;
-                        if (x.tag_type != null) return error.InvalidType;
+                        if (x.layout != .@"extern") return .Unusable;
+                        if (x.tag_type != null) return .Unusable;
 
                         var fields = std.ArrayList(TypeInfo.Field).init(self.allocator);
                         inline for (x.fields) |field| {
@@ -858,7 +861,7 @@ fn HeaderGenerator(comptime Module: type) type {
                         };
                     },
                     .Enum => |x| en: {
-                        if (!isValidTag(x.tag_type)) return error.InvalidType;
+                        if (!isValidTag(x.tag_type)) return .Unusable;
 
                         var fields = std.ArrayList([]const u8).init(self.allocator);
                         inline for (x.fields) |field| {
@@ -868,15 +871,15 @@ fn HeaderGenerator(comptime Module: type) type {
                         break :en TypeInfo{ .Enum = fields.items };
                     },
                     .Pointer => |x| ptr: {
-                        if (x.size == .Slice) return error.InvalidType;
+                        if (x.size == .Slice) return .Unusable;
                         const child = try self.genType(x.child);
                         break :ptr TypeInfo{ .Pointer = child };
                     },
                     .Optional => |x| opt: {
-                        if (@typeInfo(x.child) != .Pointer) return error.InvalidType;
-                        break :opt self.genType(x.child);
+                        if (@typeInfo(x.child) != .Pointer) return .Unusable;
+                        break :opt self.genTypeInfo(x.child);
                     },
-                    else => return error.InvalidType,
+                    else => return .Unusable,
                 },
             };
         }
