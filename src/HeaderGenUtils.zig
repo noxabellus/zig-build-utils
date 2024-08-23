@@ -30,6 +30,7 @@ pub inline fn MakeData(
         pub const prefix = hData.prefix;
         pub const customTypes = hData.customTypes;
         pub const enumSuffixes = hData.enumSuffixes;
+        pub const procArgs = hData.procArgs;
     };
 }
 
@@ -63,6 +64,10 @@ fn validateHData(comptime hData: type) void {
         },
         .{ "enumSuffixes",
         \\    A struct mapping enum names to suffixes to append to their variants
+        },
+        .{ "procArgs",
+        \\    A struct mapping procedure type names to their argument types and names.
+        \\    The types can be found through reflection, but they are required here to ensure that the names don't become desynced.
         },
     };
 

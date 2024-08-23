@@ -1,10 +1,11 @@
 const std = @import("std");
 const builtin = std.builtin;
 const ZigType = builtin.Type;
+const ZigTypeUtils = @import("ZigTypeUtils");
 const zig = std.zig;
 
 pub const std_options = std.Options {
-    .log_level = .info,
+    .log_level = .warn,
 };
 
 const log = std.log.scoped(.headergen);
@@ -204,7 +205,11 @@ const Member = union(enum) {
                             }
                             return error.ExternTypeNotFound;
                         };
-                        try t.renderDecl(generator, writer);
+                        t.renderDecl(x.name, t.declName, generator, writer) catch |err| {
+                            log.err("{}: failed to render type {s} aka {s}, {s}", .{ x.location, x.name, t.declName orelse "{unknown}", t.zigName });
+                            return err;
+                        };
+                        try writer.writeAll(";\n");
                     },
                 }
             },
@@ -212,12 +217,12 @@ const Member = union(enum) {
                 try writer.print("{comment}static const {s} {s} = {s};", .{ x.location, x.typeExpr, x.name, x.valueExpr });
             },
             .Var => |x| {
-                try writer.print("{comment}extern {s} {s};", .{ x.location, x.typeExpr, x.name });
+                try writer.print("{comment}extern {s}{s};", .{ x.location, x.typeExpr, x.name });
             },
             .Function => |x| {
-                try writer.print("{comment}{s} {s} (", .{ x.location, x.returnType, x.name });
+                try writer.print("{comment}{s}{s} (", .{ x.location, x.returnType, x.name });
                 for (x.params, 0..) |param, i| {
-                    try writer.print("{s} {s}", .{ param.typeExpr, param.name });
+                    try writer.print("{s}{s}", .{ param.typeExpr, param.name });
                     if (i < x.params.len - 1) {
                         try writer.writeAll(", ");
                     }
@@ -420,16 +425,57 @@ fn parseMember(
 fn convertTypeExpr(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
     var slice = src;
 
+    var isOpt = false;
+
     if (slice[0] == '?') {
-        std.debug.assert(slice[1] == '*');
+        isOpt = true;
         slice = slice[1..];
     }
 
-    if (slice[0] == '*') {
-        return try std.fmt.allocPrint(allocator, "{s}*", .{try translatePrimitiveType(allocator, slice[1..])});
-    } else {
-        return try translatePrimitiveType(allocator, slice);
+    const MAX_PTRS: usize = 16;
+    var isPtr: usize = 0;
+    var isConst = std.mem.zeroes([MAX_PTRS]bool);
+
+    while (strStartCase(slice, .{"*", "[*]", "[*:0]"})) |ptrStart| {
+        slice = slice[ptrStart..];
+        if (isPtr >= MAX_PTRS) {
+            log.err("Too many pointers in type expr `{s}`", .{src});
+            return error.TooManyPointers;
+        }
+        if (std.mem.startsWith(u8, slice, "const ")) {
+            slice = slice[6..];
+            isConst[isPtr] = true;
+        }
+        isPtr += 1;
     }
+
+    if (isOpt and isPtr == 0) {
+        log.err("Cannot convert non-pointer optional type `{s}`", .{src});
+        return error.InvalidType;
+    }
+
+    const inner = translatePrimitiveType(allocator, slice) catch |err| {
+        log.err("Failed to convert type expr `{s}`", .{src});
+        return err;
+    };
+
+    if (isPtr == 0) return try std.fmt.allocPrint(allocator, "{s} ", .{inner});
+
+    var buf = std.ArrayList(u8).init(allocator);
+
+    try buf.appendSlice(inner);
+    try buf.append(' ');
+
+    while (isPtr > 0) {
+        if (isConst[isPtr - 1]) {
+            if (buf.items.len > inner.len + 1) try buf.append(' ');
+            try buf.appendSlice("const");
+        }
+        try buf.append('*');
+        isPtr -= 1;
+    }
+
+    return buf.items;
 }
 
 fn translatePrimitiveType(allocator: std.mem.Allocator, slice: []const u8) ![]const u8 {
@@ -449,10 +495,16 @@ fn translatePrimitiveType(allocator: std.mem.Allocator, slice: []const u8) ![]co
     } else if (strCase(slice, .{ "u8", "u16", "u32", "u64" })) {
         const size = slice[1..];
         return try std.fmt.allocPrint(allocator, "uint{s}_t", .{size});
+    } else if (strCase(slice, .{ "f32", "f64" })) {
+        const size = slice[1..];
+        if (std.mem.eql(u8, size, "32")) {
+            return "float";
+        } else if (std.mem.eql(u8, size, "64")) {
+            return "double";
+        } else unreachable;
     } else if (strCase(slice, .{"anyopaque"})) {
         return "void";
     } else {
-        log.err("unrecognized type `{s}`", .{slice});
         return error.UnrecognizedType;
     }
 }
@@ -465,6 +517,16 @@ inline fn strCase(slice: []const u8, comptime options: anytype) bool {
     }
 
     return false;
+}
+
+inline fn strStartCase(slice: []const u8, comptime options: anytype) ?usize {
+    inline for (0..options.len) |i| {
+        if (std.mem.startsWith(u8, slice, options[i])) {
+            return options[i].len;
+        }
+    }
+
+    return null;
 }
 
 fn tagStr(kw: zig.Token.Tag) []const u8 {
@@ -516,8 +578,18 @@ const TypeId = enum(u48) {
     }
 
     fn render(self: TypeId, gen: *const Generator, writer: anytype) !void {
-        const ty = gen.idToType.get(self).?;
+        const ty: Type = gen.idToType.get(self).?;
         try ty.render(gen, writer);
+    }
+
+    fn renderDecl(self: TypeId, name: ?[]const u8, declName: ?[]const u8, gen: *const Generator, writer: anytype) !void {
+        const ty: Type = gen.idToType.get(self).?;
+        try ty.renderDecl(name, declName, gen, writer);
+    }
+
+    fn renderField(self: TypeId, name: []const u8, isGeneratedParam: bool, gen: *const Generator, writer: anytype) !void {
+        const ty: Type = gen.idToType.get(self).?;
+        try ty.renderField(name, isGeneratedParam, gen, writer);
     }
 
     const Map = std.HashMap(TypeId, Type, TypeId.MapContext, 80);
@@ -539,38 +611,50 @@ const Type = struct {
     zigName: []const u8,
     info: TypeInfo,
 
-    fn renderDecl(self: Type, gen: *const Generator, writer: anytype) !void {
-        if (self.declName) |dn| switch (self.info) {
-            .Function => {
-                try writer.writeAll("typedef ");
-                try self.info.renderDecl(dn, self.zigName, gen, writer);
-                try writer.writeAll(";");
-            },
-            else => {
-                try writer.writeAll("typedef ");
-                try self.info.renderDecl(dn, self.zigName, gen, writer);
-                try writer.print(" {s};", .{dn});
-            },
+    fn render(self: Type, gen: *const Generator, writer: anytype) !void {
+        if (self.declName) |dn| {
+            try writer.writeAll(dn);
+        } else {
+            try self.info.render(self.declName, self.zigName, gen, writer);
+        }
+    }
+
+    fn renderDecl(self: Type, name: ?[]const u8, declName: ?[]const u8, gen: *const Generator, writer: anytype) !void {
+        if (name orelse self.declName) |n| {
+            try self.info.renderDecl(n, declName orelse self.declName, self.zigName, gen, writer);
         } else {
             log.err("no decl name for type {s}", .{self.zigName});
             return error.InvalidDecl;
         }
     }
 
-    fn render(self: Type, gen: *const Generator, writer: anytype) !void {
-        if (self.declName) |dn| {
-            try writer.writeAll(dn);
-        } else {
-            try self.info.render(self.zigName, gen, writer);
-        }
+    fn renderField(self: Type, name: []const u8, isGeneratedParam: bool, gen: *const Generator, writer: anytype) !void {
+        try self.info.renderField(name, self.declName, self.zigName, isGeneratedParam, gen, writer);
     }
 };
 
+fn allStars(str: []const u8) bool {
+    for (str) |c| {
+        if (c != '*') {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn toUpperStr(allocator: std.mem.Allocator, str: []const u8) anyerror![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
-    for (str) |c| {
+    for (str, 0..) |c, i| {
         if (!std.ascii.isASCII(c)) {
             return error.InvalidAscii;
+        }
+
+        if (std.ascii.isUpper(c) and i > 0) {
+            const lastC = str[i - 1];
+            if (lastC != '_' and !std.ascii.isUpper(lastC)) {
+                try buf.appendSlice(&[_]u8{'_', c});
+                continue;
+            }
         }
 
         try buf.append(std.ascii.toUpper(c));
@@ -604,16 +688,18 @@ const TypeInfo = union(enum) {
         params: []const TypeId,
     };
 
-    fn render(self: TypeInfo, zigName: []const u8, gen: *const Generator, writer: anytype) anyerror!void {
-        return self.renderDecl(null, zigName, gen, writer);
+    fn render(self: TypeInfo, declName: ?[]const u8, zigName: []const u8, gen: *const Generator, writer: anytype) anyerror!void {
+        return self.renderDecl(null, declName, zigName, gen, writer);
     }
 
-    fn renderDecl(self: TypeInfo, name: ?[]const u8, zigName: []const u8, gen: *const Generator, writer: anytype) anyerror!void {
+    fn renderDecl(self: TypeInfo, name: ?[]const u8, declName: ?[]const u8, zigName: []const u8, gen: *const Generator, writer: anytype) anyerror!void {
+        log.info("renderDecl \"{s}\" {s} :: {s}", .{name orelse "", zigName, @tagName(self)});
+
         switch (self) {
             .Enum => |x| {
-                try if (name) |n| writer.print("enum {s} {{", .{n}) else writer.writeAll("enum {");
+                try if (name) |n| writer.print("typedef enum {s} {{", .{n}) else writer.writeAll("enum {");
                 if (x.len > 0) try writer.writeAll("\n");
-                if (if (name) |n| gen.enumSuffixes.get(n) orelse null else null) |suffix| {
+                if (if (name) |n| gen.enumSuffixes.get(n) else null) |suffix| {
                     for (x) |variantName| {
                         const upper = toUpperStr(gen.allocator, variantName) catch |err| {
                             log.err("cannot convert variant name {s} to upper case, {}", .{variantName, err});
@@ -631,54 +717,258 @@ const TypeInfo = union(enum) {
                     }
                 }
                 try writer.writeAll("}");
+                if (name) |n| try writer.print(" {s}", .{n});
             },
             .Union => |x| {
-                try if (name) |n| writer.print("union {s} {{", .{n}) else writer.writeAll("union {");
+                try if (name) |n| writer.print("typedef union {s} {{", .{n}) else writer.writeAll("union {");
                 if (x.len > 0) try writer.writeAll("\n");
                 for (x) |field| {
                     try writer.writeAll("    ");
-                    try field.type.render(gen, writer);
-                    try writer.print(" {s};\n", .{field.name});
+                    try field.type.renderField(field.name, false, gen, writer);
+                    try writer.writeAll(";\n");
                 }
                 try writer.writeAll("}");
+                if (name) |n| try writer.print(" {s}", .{n});
             },
             .Struct => |x| {
-                try if (name) |n| writer.print("struct {s} {{", .{n}) else writer.writeAll("struct {");
+                try if (name) |n| writer.print("typedef struct {s} {{", .{n}) else writer.writeAll("struct {");
                 if (x.fields.len > 0) try writer.writeAll("\n");
                 for (x.fields) |field| {
                     try writer.writeAll("    ");
-                    try field.type.render(gen, writer);
-                    try writer.print(" {s};\n", .{field.name});
+                    try field.type.renderField(field.name, false, gen, writer);
+                    try writer.writeAll(";\n");
                 }
                 try writer.writeAll("}");
+                if (name) |n| try writer.print(" {s}", .{n});
             },
-            .Opaque => try writer.writeAll("void"),
-            .Pointer => |x| {
+            .Opaque => if (name) |n| {
+                try writer.print("typedef void {s}", .{n});
+            } else {
+                try writer.writeAll("void");
+            },
+            .Pointer => |x| if (name) |n| {
+                const ptrName = try std.fmt.allocPrint(gen.allocator, "*{s}", .{n});
+                try x.renderDecl(ptrName, declName, gen, writer);
+            } else {
                 try x.render(gen, writer);
                 try writer.writeAll("*");
             },
             .Function => |x| {
+                if (name != null) try writer.writeAll("typedef ");
                 try x.returnType.render(gen, writer);
-                try if (name) |n| writer.print(" (*{s}) (", .{n}) else return error.InvalidFunctionPrint;
+                if (name) |n| {
+                    if (std.mem.startsWith(u8, n, "*")) {
+                        try writer.print(" ({s}) (", .{n});
+                    } else {
+                        try writer.print(" (*{s}) (", .{n});
+                    }
+                } else {
+                    log.err("function type without name not inside a structure, {s}", .{zigName});
+                    return error.InvalidFunctionPrint;
+                }
                 for (x.params, 0..) |param, i| {
-                    try param.render(gen, writer);
+                    var generatedParamName = false;
+                    const paramName = if (if (declName) |n| gen.procArgs.get(n) else null) |procEntry| procArgs: {
+                        switch (procEntry) {
+                            .Ignore => {
+                                generatedParamName = true;
+                                break :procArgs try std.fmt.allocPrint(gen.allocator, "v{}", .{i});
+                            },
+                            .Pairs => |procArgs| {
+                                if (procArgs.len <= i) {
+                                    log.err("procArgs entry for procedure type {s} is too short", .{declName orelse zigName});
+                                    return error.InvalidProcArgs;
+                                }
+
+                                if (procArgs[i].type != param) {
+                                    log.err("procArgs entry for procedure type {s} does not match at parameter type {}", .{declName orelse zigName, i});
+                                    return error.InvalidProcArgs;
+                                }
+
+                                break :procArgs procArgs[i].name;
+                            }
+                        }
+                    } else noProcArgs: {
+                        if (declName) |dn| {
+                            log.warn("no procArgs entry for procedure type {s}", .{dn});
+                        }
+                        generatedParamName = true;
+                        break :noProcArgs try std.fmt.allocPrint(gen.allocator, "v{}", .{i});
+                    };
+                    try param.renderField(paramName, generatedParamName, gen, writer);
                     if (i < x.params.len - 1) {
                         try writer.writeAll(", ");
                     }
                 }
                 try writer.writeAll(")");
             },
-            .Primitive => |x| try writer.print("{s}", .{x}),
+            .Primitive => |x| if (name) |n| {
+                try writer.print("typedef {s} {s}", .{x, n});
+            } else {
+                try writer.print("{s}", .{x});
+            },
             .Unusable => {
-                log.err("unusable type info for {s}", .{name orelse zigName});
+                log.err("unusable type info for {s}", .{declName orelse zigName});
                 return error.InvalidType;
             },
             .Generative => {
-                log.err("incorrect use of generative type {s}", .{name orelse zigName});
+                log.err("incorrect use of generative type {s}", .{declName orelse zigName});
                 return error.InvalidType;
             },
         }
     }
+
+    fn renderField(self: TypeInfo, name: []const u8, declName: ?[]const u8, zigName: []const u8, isGeneratedParam: bool, gen: *const Generator, writer: anytype) anyerror!void {
+        log.info("renderField {s} {s} :: {s}", .{name, zigName, @tagName(self)});
+
+        if (declName) |dn| {
+            if (isGeneratedParam) {
+                try writer.writeAll(dn);
+            } else {
+                try writer.writeAll(dn);
+                if (!allStars(name)) try writer.writeAll(" ");
+                try writer.writeAll(name);
+            }
+            return;
+        }
+
+        switch (self) {
+            .Enum => |x| {
+                try writer.writeAll("enum {");
+                if (x.len > 0) try writer.writeAll("\n");
+                if (gen.enumSuffixes.get(name)) |suffix| {
+                    for (x) |variantName| {
+                        const upper = toUpperStr(gen.allocator, variantName) catch |err| {
+                            log.err("cannot convert variant name {s} to upper case, {}", .{variantName, err});
+                            return err;
+                        };
+                        try writer.print("    {s}{s}_{s},\n", .{ gen.prefix, upper, suffix });
+                    }
+                } else {
+                    for (x) |variantName| {
+                        const upper = toUpperStr(gen.allocator, variantName) catch |err| {
+                            log.err("cannot convert variant name {s} to upper case, {}", .{variantName, err});
+                            return err;
+                        };
+                        try writer.print("    {s}{s},\n", .{ gen.prefix, upper });
+                    }
+                }
+                try writer.writeAll("}");
+                if (!isGeneratedParam) {
+                    if (!allStars(name)) try writer.writeAll(" ");
+                    try writer.writeAll(name);
+                }
+            },
+            .Union => |x| {
+                try writer.writeAll("union {");
+                if (x.len > 0) try writer.writeAll("\n");
+                for (x) |field| {
+                    try writer.writeAll("    ");
+                    try field.type.renderField(field.name, false, gen, writer);
+                    try writer.writeAll(";\n");
+                }
+                try writer.writeAll("}");
+                if (!isGeneratedParam) {
+                    if (!allStars(name)) try writer.writeAll(" ");
+                    try writer.writeAll(name);
+                }
+            },
+            .Struct => |x| {
+                try writer.writeAll("struct {");
+                if (x.fields.len > 0) try writer.writeAll("\n");
+                for (x.fields) |field| {
+                    try writer.writeAll("    ");
+                    try field.type.renderField(field.name, false, gen, writer);
+                    try writer.writeAll(";\n");
+                }
+                try writer.writeAll("}");
+                if (!isGeneratedParam) {
+                    if (!allStars(name)) try writer.writeAll(" ");
+                    try writer.writeAll(name);
+                }
+            },
+            .Opaque => {
+                try writer.writeAll("void");
+                if (!allStars(name)) try writer.writeAll(" ");
+                try writer.writeAll(name);
+            },
+            .Pointer => |x| {
+                const ptrName =
+                    if (isGeneratedParam) "*"
+                    else try std.fmt.allocPrint(gen.allocator, "*{s}", .{name});
+
+                try x.renderField(ptrName, false, gen, writer);
+            },
+            .Function => |x| {
+                try x.returnType.render(gen, writer);
+                if (std.mem.startsWith(u8, name, "*")) {
+                    try writer.print(" ({s}) (", .{name});
+                } else {
+                    try writer.print(" (*{s}) (", .{name});
+                }
+                for (x.params, 0..) |param, i| {
+                    var generatedParamName = false;
+                    const paramName = if (if (declName) |n| gen.procArgs.get(n) else null) |procEntry| procArgs: {
+                        switch (procEntry) {
+                            .Ignore => {
+                                generatedParamName = true;
+                                break :procArgs try std.fmt.allocPrint(gen.allocator, "v{}", .{i});
+                            },
+                            .Pairs => |procArgs| {
+                                if (procArgs.len <= i) {
+                                    log.err("procArgs entry for procedure type {s} is too short", .{declName orelse zigName});
+                                    return error.InvalidProcArgs;
+                                }
+
+                                if (procArgs[i].type != param) {
+                                    log.err("procArgs entry for procedure type {s} does not match at parameter type {}", .{declName orelse zigName, i});
+                                    return error.InvalidProcArgs;
+                                }
+
+                                break :procArgs procArgs[i].name;
+                            }
+                        }
+                    } else noProcArgs: {
+                        if (declName) |dn| {
+                            log.warn("no procArgs entry for procedure type {s}", .{dn});
+                        }
+                        generatedParamName = true;
+                        break :noProcArgs try std.fmt.allocPrint(gen.allocator, "v{}", .{i});
+                    };
+                    try param.renderField(paramName, generatedParamName, gen, writer);
+                    if (i < x.params.len - 1) {
+                        try writer.writeAll(", ");
+                    }
+                }
+                try writer.writeAll(")");
+            },
+            .Primitive => |x| if (isGeneratedParam) {
+                try writer.writeAll(x);
+            } else if (!allStars(name)) {
+                try writer.print("{s} {s}", .{x, name});
+            } else {
+                try writer.print("{s}{s}", .{x, name});
+            },
+            .Unusable => {
+                log.err("unusable type info for {s} aka {s} / {s}", .{name, declName orelse "\"\"", zigName});
+                return error.InvalidType;
+            },
+            .Generative => {
+                log.err("incorrect use of generative type {s} aka {s} / {s}", .{name, declName orelse "\"\"", zigName});
+                return error.InvalidType;
+            },
+        }
+    }
+};
+
+const ProcPair = struct {
+    type: TypeId,
+    name: []const u8,
+};
+
+const ProcEntry = union(enum) {
+    Pairs: []const ProcPair,
+    Ignore: void,
 };
 
 fn HeaderGenerator(comptime Module: type) type {
@@ -700,6 +990,8 @@ fn HeaderGenerator(comptime Module: type) type {
         prefix: []const u8,
         enumSuffixes: std.StringHashMap([]const u8),
         customTypes: std.StringHashMap(CustomType),
+        procArgs: std.StringHashMap(ProcEntry),
+
         const Self = @This();
 
         const CustomType = GENERATION_DATA.CustomType;
@@ -723,6 +1015,7 @@ fn HeaderGenerator(comptime Module: type) type {
                 .prefix = GENERATION_DATA.prefix,
                 .enumSuffixes = std.StringHashMap([]const u8).init(allocator),
                 .customTypes = std.StringHashMap(CustomType).init(allocator),
+                .procArgs = std.StringHashMap(ProcEntry).init(allocator),
             };
 
             try self.ignoredDecls.put("std_options", {});
@@ -738,6 +1031,39 @@ fn HeaderGenerator(comptime Module: type) type {
 
             inline for (comptime std.meta.fieldNames(@TypeOf(GENERATION_DATA.enumSuffixes))) |declName| {
                 try self.enumSuffixes.put(declName, @field(GENERATION_DATA.enumSuffixes, declName));
+            }
+
+            inline for (comptime std.meta.fieldNames(@TypeOf(GENERATION_DATA.procArgs))) |declName| {
+                const field = @field(GENERATION_DATA.procArgs, declName);
+                const fieldT = @TypeOf(field);
+                const fieldInfo = @typeInfo(fieldT);
+
+                if (fieldInfo == .Struct) {
+                    if (!fieldInfo.Struct.is_tuple) {
+                        log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
+                        return error.InvalidProcArgs;
+                    }
+
+                    var buf = std.ArrayList(ProcPair).init(allocator);
+
+                    inline for (field) |rawPair| {
+                        const typeId = TypeId.of(rawPair[0]);
+                        const name = rawPair[1];
+                        try buf.append(ProcPair{ .type = typeId, .name = name });
+                    }
+
+                    try self.procArgs.put(declName, .{.Pairs = buf.items});
+                } else if (ZigTypeUtils.isString(@TypeOf(field))) {
+                    if (std.mem.eql(u8, field, "ignore")) {
+                        try self.procArgs.put(declName, .Ignore);
+                    } else {
+                        log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
+                        return error.InvalidProcArgs;
+                    }
+                } else {
+                    log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
+                    return error.InvalidProcArgs;
+                }
             }
 
             return self;

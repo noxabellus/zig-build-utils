@@ -26,6 +26,10 @@ pub fn makeHeaderGenSource(b: *Build) Build.LazyPath {
 
 pub fn makeHeaderGen(b: *Build, module: *Build.Module) !*Build.Step.Compile {
     const nativeTarget = b.resolveTargetQuery(.{});
+    const ztu = b.dependency("ZigTypeUtils", .{
+        .target = nativeTarget,
+        .optimize = .Debug,
+    });
     const name = try std.fmt.allocPrint(b.allocator, "headergen:{s}", .{std.fs.path.stem(module.root_source_file.?.getDisplayName())});
     const exe = b.addExecutable(.{
         .name = name,
@@ -34,5 +38,6 @@ pub fn makeHeaderGen(b: *Build, module: *Build.Module) !*Build.Step.Compile {
         .optimize = .Debug,
     });
     exe.root_module.addImport(HeaderGenUtils.SOURCE_MODULE_NAME, module);
+    exe.root_module.addImport("ZigTypeUtils", ztu.module("ZigTypeUtils"));
     return exe;
 }
