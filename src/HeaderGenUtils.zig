@@ -3,6 +3,15 @@ const std = @import("std");
 pub const SOURCE_MODULE_NAME = "#HEADER_GENERATION_SOURCE_MODULE#";
 pub const DATA_SOURCE_NAME = "HEADER-GENERATION-DATA";
 
+/// A type either described in the HEADER-GENERATION-DATA source or implementing a function with the following signature:
+/// - `fn generate_c_repr(name: []const u8, expr: []const u8, generator: anytype, writer: anytype) anyerror!void`
+///
+/// the provided `generator` will contain at least an `allocator` field, as well as the following api:
+/// - `fn findTypeName(self: *const Self, comptime T: type) ![]const u8`
+/// - `fn lookupType(self: *const Self, name: []const u8) ?*Type`
+/// - `fn genType(self: *Self, comptime T: type) !TypeId`
+/// - `fn genTypeDecl(self: *Self, declName: ?[]const u8, comptime T: type) !TypeId`
+/// - `fn genTypeInfo(self: *Self, comptime T: type) !TypeInfo`
 pub const customtype = type;
 pub const opaquetype = type;
 
@@ -29,10 +38,10 @@ fn validateHData(comptime hData: type) void {
     const required = comptime &[_]struct {[]const u8, []const u8} {
         .{ "CustomType",
         \\    A tagged union describing the kinds of custom types that will be used in the header;
+        \\    it should contain at least the field `Generative` of type `void`;
         \\    it should contain a member function with the following signature:
         \\        `pub fn render(self: CustomType, name: []const u8, generator: anytype, writer: anytype) anyerror!void`
-        \\    The provided `generator` will contain at least an `allocator` field;
-        \\    more information can be found in `HeaderGen.zig`
+        \\    Information about `generator` can be found in the doc for `customtype`
         },
         .{ "customTypes",
         \\    A struct mapping custom type names to their values, which should all be of the CustomType provided
@@ -84,6 +93,28 @@ fn validateHData(comptime hData: type) void {
 }
 
 fn validateCustomType(comptime hCustomType: type, comptime hCustomTypes: anytype) void {
+    if (comptime !@hasField(hCustomType, "Generative")) {
+        @compileError("CustomType must have a Generative field");
+    }
+
+    if (comptime @typeInfo(hCustomType) != .Union) {
+        @compileError("CustomType must be a tagged union");
+    }
+
+    if (comptime @typeInfo(hCustomType).Union.tag_type == null) {
+        @compileError("CustomType must be a tagged union");
+    }
+
+    inline for (@typeInfo(hCustomType).Union.fields) |field| {
+        if (comptime !std.mem.eql(u8, field.name, "Generative")) {
+            continue;
+        }
+
+        if (comptime field.type != void) {
+            @compileError("CustomType.Generative must be of type void");
+        }
+    }
+
     if (comptime !@hasDecl(hCustomType, "render")) {
         @compileError("CustomType must have a render method");
     }

@@ -33,7 +33,7 @@ pub fn main() !void {
     const cwd = std.fs.cwd();
 
 
-    const generator = try Generator.init(allocator);
+    var generator = try Generator.init(allocator);
 
     var source = try cwd.openFile(generator.path, .{ .mode = .read_only });
     defer source.close();
@@ -43,6 +43,8 @@ pub fn main() !void {
     const ast = try zig.Ast.parse(allocator, sourceText, .zig);
 
     const members = try parseMembers(&generator, ast, ast.rootDecls());
+
+    try generator.gatherDecls();
 
     const headerText = try render(&generator, members);
 
@@ -101,7 +103,7 @@ pub fn main() !void {
 
 fn render(generator: *const Generator, members: []const Member) ![]const u8 {
     var output = std.ArrayList(u8).init(generator.allocator);
-    const writer = output.writer();
+    const writer = output.writer().any();
 
 
     try writer.print("/* File generated from {s} */\n\n", .{generator.path});
@@ -118,7 +120,7 @@ fn render(generator: *const Generator, members: []const Member) ![]const u8 {
     return output.items;
 }
 
-fn parseMembers(gen: *const Generator, ast: zig.Ast, members: []const zig.Ast.Node.Index) ![]const Member {
+fn parseMembers(gen: *Generator, ast: zig.Ast, members: []const zig.Ast.Node.Index) ![]const Member {
     var memberBuf = std.ArrayList(Member).init(gen.allocator);
     for (members) |member| {
         if (try parseMember(gen, ast, member)) |memb| {
@@ -138,6 +140,7 @@ const Member = union(enum) {
         name: []const u8,
         location: LocationFmt,
         kind: Kind,
+        expr: []const u8,
 
         const Kind = enum {
             Custom,
@@ -172,17 +175,22 @@ const Member = union(enum) {
         };
     };
 
-    pub fn render(self: Member, generator: *const Generator, writer: anytype) !void {
+    pub fn render(self: Member, generator: *const Generator, writer: std.io.AnyWriter) !void {
         switch (self) {
             .TypeDef => |x| {
                 switch (x.kind) {
                     .Custom => {
                         try writer.print("{comment}", .{x.location});
+                        if (generator.lookupType(x.name)) |t| {
+                            if (t.info == .Generative) {
+                                return try t.info.Generative(x.name, x.expr, generator, writer);
+                            }
+                        }
                         const t = generator.customTypes.get(x.name) orelse {
                             log.err("{}: type {s} not found in custom type table", .{ x.location, x.name });
                             return error.CustomTypeNotFound;
                         };
-                        try t.render(x.name, generator, writer);
+                        try t.render(x.name, x.expr, generator, writer);
                     },
                     .Opaque => try writer.print("{comment}typedef struct {s} {{}} {s};", .{ x.location, x.name, x.name }),
                     .Extern => {
@@ -221,7 +229,7 @@ const Member = union(enum) {
 };
 
 fn parseMember(
-    gen: *const Generator,
+    gen: *Generator,
     ast: zig.Ast,
     decl: zig.Ast.Node.Index,
 ) !?Member {
@@ -349,13 +357,25 @@ fn parseMember(
                 log.warn("{}: public variable {s} does not start with {s}", .{ location, name, gen.prefix });
             }
 
-            if (std.mem.endsWith(u8, var_type_src, "type")) {
+            const typeKind: ?Member.TypeDef.Kind =
+                if (std.mem.eql(u8, var_type_src, "customtype")) .Custom
+                else if (std.mem.eql(u8, var_type_src, "opaquetype")) .Opaque
+                else if (std.mem.eql(u8, var_type_src, "type")) .Extern
+                else null;
+
+            if (typeKind) |kind| {
                 std.debug.assert(mut == .keyword_const);
+
+                if (kind == .Custom) {
+                    try gen.registerCustomType(name);
+                }
+
                 return Member{
                     .TypeDef = .{
                         .name = name,
                         .location = location,
-                        .kind = if (std.mem.startsWith(u8, var_type_src, "custom")) .Custom else if (std.mem.startsWith(u8, var_type_src, "opaque")) .Opaque else .Extern,
+                        .kind = kind,
+                        .expr = var_init,
                     },
                 };
             } else if (mut == .keyword_const) {
@@ -567,6 +587,7 @@ const TypeInfo = union(enum) {
     Function: Function,
     Primitive: []const u8,
     Unusable: void,
+    Generative: *const fn (name: []const u8, expr: []const u8, *const Generator, writer: std.io.AnyWriter) anyerror!void,
 
     const Struct = struct {
         packType: ?TypeId,
@@ -651,7 +672,11 @@ const TypeInfo = union(enum) {
             .Unusable => {
                 log.err("unusable type info for {s}", .{name orelse zigName});
                 return error.InvalidType;
-            }
+            },
+            .Generative => {
+                log.err("incorrect use of generative type {s}", .{name orelse zigName});
+                return error.InvalidType;
+            },
         }
     }
 };
@@ -715,6 +740,18 @@ fn HeaderGenerator(comptime Module: type) type {
                 try self.enumSuffixes.put(declName, @field(GENERATION_DATA.enumSuffixes, declName));
             }
 
+            return self;
+        }
+
+        fn registerCustomType(self: *Self, name: []const u8) !void {
+            if (self.customTypes.contains(name)) {
+                return;
+            }
+
+            try self.customTypes.put(name, .Generative);
+        }
+
+        fn gatherDecls(self: *Self) !void {
             inline for (S.decls) |decl| {
                 const T = @field(Module, decl.name);
 
@@ -722,24 +759,49 @@ fn HeaderGenerator(comptime Module: type) type {
                     continue;
                 }
 
-                if (!self.ignoredDecls.contains(decl.name)) {
+                const id = TypeId.of(T);
+                if (self.ignoredDecls.contains(decl.name)) {
+                    try self.nameToId.put(decl.name, id);
+                    try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .Unusable});
+                } else if (self.customTypes.contains(decl.name)) {
+                    try self.nameToId.put(decl.name, id);
+
+                    if (std.meta.hasFn(T, "generate_c_repr")) {
+                        try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .{.Generative = &struct {
+                            fn fun (name: []const u8, expr: []const u8, generator: *const Self, writer: std.io.AnyWriter) anyerror!void {
+                                try T.generate_c_repr(name, expr, generator, writer);
+                            }
+                        }.fun}});
+                    } else {
+                        try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .Unusable});
+                    }
+                } else {
                     _ = try self.genTypeDecl(decl.name, T);
                 }
             }
-
-            return self;
         }
 
-        fn lookupType(self: *const Self, name: []const u8) ?*Type {
+        pub fn findTypeName(self: *const Self, comptime T: type) ![]const u8 {
+            const id = TypeId.of(T);
+
+            const ty = self.idToType.get(id) orelse {
+                log.err("type not found: {s}", .{@typeName(T)});
+                return error.TypeNotFound;
+            };
+
+            return ty.declName orelse ty.zigName;
+        }
+
+        pub fn lookupType(self: *const Self, name: []const u8) ?*Type {
             const id = self.nameToId.get(name) orelse return null;
             return self.idToType.getPtr(id) orelse unreachable;
         }
 
-        fn genType(self: *Self, comptime T: type) !TypeId {
+        pub fn genType(self: *Self, comptime T: type) !TypeId {
             return try self.genTypeDecl(null, T);
         }
 
-        fn genTypeDecl(self: *Self, declName: ?[]const u8, comptime T: type) !TypeId {
+        pub fn genTypeDecl(self: *Self, declName: ?[]const u8, comptime T: type) !TypeId {
             const zigName = @typeName(T);
 
             const id = TypeId.of(T);
@@ -778,7 +840,7 @@ fn HeaderGenerator(comptime Module: type) type {
             return id;
         }
 
-        fn genTypeInfo(self: *Self, comptime T: type) !TypeInfo {
+        pub fn genTypeInfo(self: *Self, comptime T: type) !TypeInfo {
             const info = @typeInfo(T);
 
             return switch (T) {
