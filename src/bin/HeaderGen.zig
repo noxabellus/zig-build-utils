@@ -106,17 +106,14 @@ fn render(generator: *const Generator, members: []const Member) ![]const u8 {
     var output = std.ArrayList(u8).init(generator.allocator);
     const writer = output.writer().any();
 
-
-    try writer.print("/* File generated from {s} */\n\n", .{generator.path});
-
-    try writer.print("{s}\n\n", .{generator.head});
+    try writer.print("{s}", .{generator.head});
 
     for (members) |member| {
         try member.render(generator, writer);
         try writer.writeAll("\n\n");
     }
 
-    try writer.print("{s}\n", .{generator.foot});
+    try writer.print("{s}", .{generator.foot});
 
     return output.items;
 }
@@ -193,7 +190,7 @@ const Member = union(enum) {
                         };
                         try t.render(x.name, x.expr, generator, writer);
                     },
-                    .Opaque => try writer.print("{comment}typedef struct {s} {{}} {s};", .{ x.location, x.name, x.name }),
+                    .Opaque => try writer.print("{comment}typedef {s}OPAQUE {s};", .{ x.location, generator.prefix, x.name }),
                     .Extern => {
                         try writer.print("{comment}", .{x.location});
                         const t = generator.lookupType(x.name) orelse {
@@ -209,7 +206,7 @@ const Member = union(enum) {
                             log.err("{}: failed to render type {s} aka {s}, {s}", .{ x.location, x.name, t.declName orelse "{unknown}", t.zigName });
                             return err;
                         };
-                        try writer.writeAll(";\n");
+                        try writer.writeAll(";");
                     },
                 }
             },
@@ -1004,14 +1001,66 @@ fn HeaderGenerator(comptime Module: type) type {
         }
 
         fn init(allocator: std.mem.Allocator) !Self {
+            const HEADER_NAME = try toUpperStr(allocator, std.fs.path.stem(GENERATION_DATA.source));
+
+            const STATIC_HEAD =
+                \\/* File generated from {s} */
+                \\
+                \\#pragma once
+                \\
+                \\#ifndef {s}_H
+                \\#define {s}_H
+                \\
+                \\#define {s}OPAQUE struct{{}}
+                \\
+                \\
+                ;
+
+            const head =
+                if (GENERATION_DATA.head.len > 0)
+                    try std.fmt.allocPrint(
+                        allocator,
+                        STATIC_HEAD ++
+                        \\{s}
+                        \\
+                        \\
+                        , .{
+                            GENERATION_DATA.source,
+                            HEADER_NAME,
+                            HEADER_NAME,
+                            GENERATION_DATA.prefix,
+                            GENERATION_DATA.head,
+                        }
+                    )
+                else try std.fmt.allocPrint(allocator, STATIC_HEAD, .{HEADER_NAME, HEADER_NAME, GENERATION_DATA.prefix});
+
+            const STATIC_FOOT =
+                \\#endif // {s}_H
+                \\
+                ;
+
+            const foot =
+                if (GENERATION_DATA.foot.len > 0)
+                    try std.fmt.allocPrint(
+                        allocator,
+                        \\{s}
+                        \\
+                        ++ STATIC_FOOT
+                        , .{
+                            GENERATION_DATA.foot,
+                            HEADER_NAME,
+                        }
+                    )
+                else try std.fmt.allocPrint(allocator, STATIC_FOOT, .{HEADER_NAME});
+
             var self = Self{
                 .allocator = allocator,
                 .ignoredDecls = std.StringHashMap(void).init(allocator),
                 .path = GENERATION_DATA.source,
                 .nameToId = std.StringHashMap(TypeId).init(allocator),
                 .idToType = TypeId.Map.init(allocator),
-                .head = GENERATION_DATA.head,
-                .foot = GENERATION_DATA.foot,
+                .head = head,
+                .foot = foot,
                 .prefix = GENERATION_DATA.prefix,
                 .enumSuffixes = std.StringHashMap([]const u8).init(allocator),
                 .customTypes = std.StringHashMap(CustomType).init(allocator),
