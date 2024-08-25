@@ -75,7 +75,7 @@ pub fn init(
         if (comptime InfoT == *Build.Step.Options) {
             _ = try createUnit(.{
                 .set = set,
-                .name = std.fmt.comptimePrint(":{s}", .{packageName}),
+                .name = std.fmt.comptimePrint("{s}", .{packageName}),
                 .dependencies = &[0][]const u8 {},
                 .data = .{ .Config = packageInfo },
             });
