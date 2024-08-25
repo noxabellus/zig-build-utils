@@ -104,8 +104,8 @@ pub fn init(
             const moduleName = modules[i];
 
             const namespacedName = comptime
-                if (std.mem.eql(u8, packageName, moduleName)) std.fmt.comptimePrint(":{s}", .{packageName})
-                else std.fmt.comptimePrint(":{s}:{s}", .{packageName, moduleName});
+                if (std.mem.eql(u8, packageName, moduleName)) std.fmt.comptimePrint("{s}", .{packageName})
+                else std.fmt.comptimePrint("{s}:{s}", .{packageName, moduleName});
 
             _ = try createUnit(.{
                 .set = set,
