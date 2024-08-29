@@ -5,6 +5,7 @@ const lib = @import("./root.zig");
 const SourceTree = lib.SourceTree;
 const ZigTypeUtils = lib.ZigTypeUtils;
 const HeaderGenUtils = lib.HeaderGenUtils;
+const Snapshot = lib.Snapshot;
 
 const log = std.log.scoped(.compilation);
 
@@ -282,6 +283,30 @@ pub fn getTemplater(self: *Set) Binary {
             return builder.artifact("templater");
         },
     }
+}
+
+pub fn getSnapshotWriter(self: *Set) Binary {
+    switch (self.meta) {
+        .Generative => |set| {
+            return set.getSnapshotWriter();
+        },
+        .Native => |builder| {
+            return builder.artifact("snapshot-writer");
+        },
+    }
+}
+
+pub fn getSnapshotHelper(self: *Set, snapshotPath: []const u8) !Snapshot.Helper {
+    const bin = self.getSnapshotWriter();
+    const run = self.owner.addRunArtifact(bin);
+    const out = run.captureStdOut();
+    const write = self.owner.addWriteFiles();
+    write.addCopyFileToSource(out, snapshotPath);
+
+    const map = try Snapshot.Map.readMap(self.owner.allocator, snapshotPath)
+         orelse try Snapshot.Map.init(self.owner.allocator);
+
+    return .{ .owner = self.owner, .map = map, .run = run, .write = write };
 }
 
 pub fn createHeaderGen(self: *Set, source: *Unit) !*Unit {

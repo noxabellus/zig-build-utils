@@ -36,6 +36,22 @@ pub fn build(b: *Build) !void {
         .optimize = defaultOptimize,
     });
 
+    const Snapshot = b.addModule("Snapshot", .{
+        .root_source_file = b.path("src/Snapshot.zig"),
+        .target = defaultTarget,
+        .optimize = defaultOptimize,
+    });
+
+    const SnapshotWriter = b.addExecutable(.{
+        .name = "snapshot-writer",
+        .root_source_file = b.path("src/bin/SnapshotWriter.zig"),
+        .target = defaultTarget,
+        .optimize = defaultOptimize,
+    });
+
+    SnapshotWriter.root_module.addImport("Snapshot", Snapshot);
+
+    b.default_step.dependOn(&b.addInstallArtifact(SnapshotWriter, .{}).step);
     b.default_step.dependOn(&b.addInstallArtifact(Templater, .{}).step);
     b.default_step.dependOn(&b.addInstallArtifact(LibJoiner, .{}).step);
     b.default_step.dependOn(&b.addInstallFile(Builder.makeHeaderGenSource(b), "HeaderGen.zig").step);

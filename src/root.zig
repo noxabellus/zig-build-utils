@@ -9,6 +9,7 @@ pub const Compilation = @import("./Compilation.zig");
 pub const SourceTree = @import("./SourceTree.zig");
 pub const Manifest = @import("./Manifest.zig");
 pub const HeaderGenUtils = @import("./HeaderGenUtils.zig");
+pub const Snapshot = @import("./Snapshot.zig").Snapshot;
 
 var headerGenSource: ?Build.LazyPath = null;
 
