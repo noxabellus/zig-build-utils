@@ -23,9 +23,9 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
-    if (args.len < 2) {
+    if (args.len < 3) {
         return error.NotEnoughArguments;
-    } else if (args.len > 2) {
+    } else if (args.len > 3) {
         return error.TooManyArguments;
     }
 
@@ -34,9 +34,12 @@ pub fn main() !void {
     const cwd = std.fs.cwd();
 
 
-    var generator = try Generator.init(allocator);
+    var generator = try Generator.init(allocator, args[1]);
 
-    var source = try cwd.openFile(generator.path, .{ .mode = .read_only });
+    var source = cwd.openFile(generator.path, .{ .mode = .read_only }) catch |err| {
+        log.err("failed to open source file [{s}]: {s}", .{ generator.path, @errorName(err) });
+        return err;
+    };
     defer source.close();
 
     const sourceText = try source.readToEndAllocOptions(allocator, std.math.maxInt(usize), null, 128, 0);
@@ -50,8 +53,8 @@ pub fn main() !void {
     const headerText = try render(&generator, members);
 
 
-    if (!std.mem.eql(u8, args[1], "-no-static")) {
-        const outputFileName = args[1];
+    if (!std.mem.eql(u8, args[2], "-no-static")) {
+        const outputFileName = args[2];
         log.debug("output file: {s}", .{outputFileName});
 
         if (std.fs.path.dirname(outputFileName)) |dirname| {
@@ -129,10 +132,10 @@ fn parseMembers(gen: *Generator, ast: zig.Ast, members: []const zig.Ast.Node.Ind
 }
 
 const Member = union(enum) {
-    TypeDef: TypeDef,
-    Const: Const,
-    Var: Var,
-    Function: Function,
+    type_def: TypeDef,
+    constant: Const,
+    variable: Var,
+    function: Function,
 
     const TypeDef = struct {
         name: []const u8,
@@ -141,9 +144,9 @@ const Member = union(enum) {
         expr: []const u8,
 
         const Kind = enum {
-            Custom,
-            Opaque,
-            Extern,
+            custom,
+            @"opaque",
+            @"extern",
         };
     };
 
@@ -175,13 +178,13 @@ const Member = union(enum) {
 
     pub fn render(self: Member, generator: *const Generator, writer: std.io.AnyWriter) !void {
         switch (self) {
-            .TypeDef => |x| {
+            .type_def => |x| {
                 switch (x.kind) {
-                    .Custom => {
+                    .custom => {
                         try writer.print("{comment}", .{x.location});
                         if (generator.lookupType(x.name)) |t| {
-                            if (t.info == .Generative) {
-                                return try t.info.Generative(x.name, x.expr, generator, writer);
+                            if (t.info == .generative) {
+                                return try t.info.generative(x.name, x.expr, generator, writer);
                             }
                         }
                         const t = generator.customTypes.get(x.name) orelse {
@@ -190,8 +193,8 @@ const Member = union(enum) {
                         };
                         try t.render(x.name, x.expr, generator, writer);
                     },
-                    .Opaque => try writer.print("{comment}typedef {s}OPAQUE {s};", .{ x.location, generator.prefix, x.name }),
-                    .Extern => {
+                    .@"opaque" => try writer.print("{comment}typedef {s}OPAQUE {s};", .{ x.location, generator.prefix, x.name }),
+                    .@"extern" => {
                         try writer.print("{comment}", .{x.location});
                         const t = generator.lookupType(x.name) orelse {
                             log.err("{}: type {s} not found in generator table", .{ x.location, x.name });
@@ -210,13 +213,13 @@ const Member = union(enum) {
                     },
                 }
             },
-            .Const => |x| {
+            .constant => |x| {
                 try writer.print("{comment}static const {s} {s} = {s};", .{ x.location, x.typeExpr, x.name, x.valueExpr });
             },
-            .Var => |x| {
+            .variable => |x| {
                 try writer.print("{comment}extern {s}{s};", .{ x.location, x.typeExpr, x.name });
             },
-            .Function => |x| {
+            .function => |x| {
                 try writer.print("{comment}{s}{s} (", .{ x.location, x.returnType, x.name });
                 for (x.params, 0..) |param, i| {
                     try writer.print("{s}{s}", .{ param.typeExpr, param.name });
@@ -305,7 +308,7 @@ fn parseMember(
             }
 
             return Member{
-                .Function = .{
+                .function = .{
                     .name = name,
                     .location = location,
                     .returnType = ret_type,
@@ -360,20 +363,20 @@ fn parseMember(
             }
 
             const typeKind: ?Member.TypeDef.Kind =
-                if (std.mem.eql(u8, var_type_src, "customtype")) .Custom
-                else if (std.mem.eql(u8, var_type_src, "opaquetype")) .Opaque
-                else if (std.mem.eql(u8, var_type_src, "type")) .Extern
+                if (std.mem.eql(u8, var_type_src, "customtype")) .custom
+                else if (std.mem.eql(u8, var_type_src, "opaquetype")) .@"opaque"
+                else if (std.mem.eql(u8, var_type_src, "type")) .@"extern"
                 else null;
 
             if (typeKind) |kind| {
                 std.debug.assert(mut == .keyword_const);
 
-                if (kind == .Custom) {
+                if (kind == .custom) {
                     try gen.registerCustomType(name);
                 }
 
                 return Member{
-                    .TypeDef = .{
+                    .type_def = .{
                         .name = name,
                         .location = location,
                         .kind = kind,
@@ -386,7 +389,7 @@ fn parseMember(
                 }
 
                 return Member{
-                    .Const = .{
+                    .constant = .{
                         .name = name,
                         .location = location,
                         .typeExpr = if (var_type_src.len > 0) try convertTypeExpr(gen.allocator, var_type_src) else {
@@ -403,7 +406,7 @@ fn parseMember(
                 }
 
                 return Member{
-                    .Var = .{
+                    .variable = .{
                         .name = name,
                         .location = location,
                         .typeExpr = if (var_type_src.len > 0) try convertTypeExpr(gen.allocator, var_type_src) else {
@@ -660,15 +663,15 @@ fn toUpperStr(allocator: std.mem.Allocator, str: []const u8) anyerror![]const u8
 }
 
 const TypeInfo = union(enum) {
-    Enum: []const []const u8,
-    Union: []const Field,
-    Struct: Struct,
-    Opaque: void,
-    Pointer: TypeId,
-    Function: Function,
-    Primitive: []const u8,
-    Unusable: void,
-    Generative: *const fn (name: []const u8, expr: []const u8, *const Generator, writer: std.io.AnyWriter) anyerror!void,
+    @"enum": []const []const u8,
+    @"union": []const Field,
+    @"struct": Struct,
+    @"opaque": void,
+    pointer: TypeId,
+    function: Function,
+    primitive: []const u8,
+    unusable: void,
+    generative: *const fn (name: []const u8, expr: []const u8, *const Generator, writer: std.io.AnyWriter) anyerror!void,
 
     const Struct = struct {
         packType: ?TypeId,
@@ -693,7 +696,7 @@ const TypeInfo = union(enum) {
         log.info("renderDecl \"{s}\" {s} :: {s}", .{name orelse "", zigName, @tagName(self)});
 
         switch (self) {
-            .Enum => |x| {
+            .@"enum" => |x| {
                 try if (name) |n| writer.print("typedef enum {s} {{", .{n}) else writer.writeAll("enum {");
                 if (x.len > 0) try writer.writeAll("\n");
                 if (if (name) |n| gen.enumSuffixes.get(n) else null) |suffix| {
@@ -716,7 +719,7 @@ const TypeInfo = union(enum) {
                 try writer.writeAll("}");
                 if (name) |n| try writer.print(" {s}", .{n});
             },
-            .Union => |x| {
+            .@"union" => |x| {
                 try if (name) |n| writer.print("typedef union {s} {{", .{n}) else writer.writeAll("union {");
                 if (x.len > 0) try writer.writeAll("\n");
                 for (x) |field| {
@@ -727,7 +730,7 @@ const TypeInfo = union(enum) {
                 try writer.writeAll("}");
                 if (name) |n| try writer.print(" {s}", .{n});
             },
-            .Struct => |x| {
+            .@"struct" => |x| {
                 try if (name) |n| writer.print("typedef struct {s} {{", .{n}) else writer.writeAll("struct {");
                 if (x.fields.len > 0) try writer.writeAll("\n");
                 for (x.fields) |field| {
@@ -738,19 +741,19 @@ const TypeInfo = union(enum) {
                 try writer.writeAll("}");
                 if (name) |n| try writer.print(" {s}", .{n});
             },
-            .Opaque => if (name) |n| {
+            .@"opaque" => if (name) |n| {
                 try writer.print("typedef void {s}", .{n});
             } else {
                 try writer.writeAll("void");
             },
-            .Pointer => |x| if (name) |n| {
+            .pointer => |x| if (name) |n| {
                 const ptrName = try std.fmt.allocPrint(gen.allocator, "*{s}", .{n});
                 try x.renderDecl(ptrName, declName, gen, writer);
             } else {
                 try x.render(gen, writer);
                 try writer.writeAll("*");
             },
-            .Function => |x| {
+            .function => |x| {
                 if (name != null) try writer.writeAll("typedef ");
                 try x.returnType.render(gen, writer);
                 if (name) |n| {
@@ -767,11 +770,11 @@ const TypeInfo = union(enum) {
                     var generatedParamName = false;
                     const paramName = if (if (declName) |n| gen.procArgs.get(n) else null) |procEntry| procArgs: {
                         switch (procEntry) {
-                            .Ignore => {
+                            .ignore => {
                                 generatedParamName = true;
                                 break :procArgs try std.fmt.allocPrint(gen.allocator, "v{}", .{i});
                             },
-                            .Pairs => |procArgs| {
+                            .pairs => |procArgs| {
                                 if (procArgs.len <= i) {
                                     log.err("procArgs entry for procedure type {s} is too short", .{declName orelse zigName});
                                     return error.InvalidProcArgs;
@@ -799,16 +802,16 @@ const TypeInfo = union(enum) {
                 }
                 try writer.writeAll(")");
             },
-            .Primitive => |x| if (name) |n| {
+            .primitive => |x| if (name) |n| {
                 try writer.print("typedef {s} {s}", .{x, n});
             } else {
                 try writer.print("{s}", .{x});
             },
-            .Unusable => {
+            .unusable => {
                 log.err("unusable type info for {s}", .{declName orelse zigName});
                 return error.InvalidType;
             },
-            .Generative => {
+            .generative => {
                 log.err("incorrect use of generative type {s}", .{declName orelse zigName});
                 return error.InvalidType;
             },
@@ -830,7 +833,7 @@ const TypeInfo = union(enum) {
         }
 
         switch (self) {
-            .Enum => |x| {
+            .@"enum" => |x| {
                 try writer.writeAll("enum {");
                 if (x.len > 0) try writer.writeAll("\n");
                 if (gen.enumSuffixes.get(name)) |suffix| {
@@ -856,7 +859,7 @@ const TypeInfo = union(enum) {
                     try writer.writeAll(name);
                 }
             },
-            .Union => |x| {
+            .@"union" => |x| {
                 try writer.writeAll("union {");
                 if (x.len > 0) try writer.writeAll("\n");
                 for (x) |field| {
@@ -870,7 +873,7 @@ const TypeInfo = union(enum) {
                     try writer.writeAll(name);
                 }
             },
-            .Struct => |x| {
+            .@"struct" => |x| {
                 try writer.writeAll("struct {");
                 if (x.fields.len > 0) try writer.writeAll("\n");
                 for (x.fields) |field| {
@@ -884,19 +887,19 @@ const TypeInfo = union(enum) {
                     try writer.writeAll(name);
                 }
             },
-            .Opaque => {
+            .@"opaque" => {
                 try writer.writeAll("void");
                 if (!allStars(name)) try writer.writeAll(" ");
                 try writer.writeAll(name);
             },
-            .Pointer => |x| {
+            .pointer => |x| {
                 const ptrName =
                     if (isGeneratedParam) "*"
                     else try std.fmt.allocPrint(gen.allocator, "*{s}", .{name});
 
                 try x.renderField(ptrName, false, gen, writer);
             },
-            .Function => |x| {
+            .function => |x| {
                 try x.returnType.render(gen, writer);
                 if (std.mem.startsWith(u8, name, "*")) {
                     try writer.print(" ({s}) (", .{name});
@@ -907,11 +910,11 @@ const TypeInfo = union(enum) {
                     var generatedParamName = false;
                     const paramName = if (if (declName) |n| gen.procArgs.get(n) else null) |procEntry| procArgs: {
                         switch (procEntry) {
-                            .Ignore => {
+                            .ignore => {
                                 generatedParamName = true;
                                 break :procArgs try std.fmt.allocPrint(gen.allocator, "v{}", .{i});
                             },
-                            .Pairs => |procArgs| {
+                            .pairs => |procArgs| {
                                 if (procArgs.len <= i) {
                                     log.err("procArgs entry for procedure type {s} is too short", .{declName orelse zigName});
                                     return error.InvalidProcArgs;
@@ -939,18 +942,18 @@ const TypeInfo = union(enum) {
                 }
                 try writer.writeAll(")");
             },
-            .Primitive => |x| if (isGeneratedParam) {
+            .primitive => |x| if (isGeneratedParam) {
                 try writer.writeAll(x);
             } else if (!allStars(name)) {
                 try writer.print("{s} {s}", .{x, name});
             } else {
                 try writer.print("{s}{s}", .{x, name});
             },
-            .Unusable => {
+            .unusable => {
                 log.err("unusable type info for {s} aka {s} / {s}", .{name, declName orelse "\"\"", zigName});
                 return error.InvalidType;
             },
-            .Generative => {
+            .generative => {
                 log.err("incorrect use of generative type {s} aka {s} / {s}", .{name, declName orelse "\"\"", zigName});
                 return error.InvalidType;
             },
@@ -964,13 +967,13 @@ const ProcPair = struct {
 };
 
 const ProcEntry = union(enum) {
-    Pairs: []const ProcPair,
-    Ignore: void,
+    pairs: []const ProcPair,
+    ignore: void,
 };
 
 fn HeaderGenerator(comptime Module: type) type {
     const S: ZigType.Struct = switch (@typeInfo(Module)) {
-        .Struct => |s| s,
+        .@"struct" => |s| s,
         else => @compileError("Expected a struct for c type info generation"),
     };
 
@@ -995,13 +998,20 @@ fn HeaderGenerator(comptime Module: type) type {
 
         fn isValidTag(comptime T: type) bool {
             return switch (@typeInfo(T)) {
-                .Int => |t| t.bits == 8 or t.bits == 16 or t.bits == 32,
+                .int => |t| t.bits == 8 or t.bits == 16 or t.bits == 32,
                 else => false,
             };
         }
 
-        fn init(allocator: std.mem.Allocator) !Self {
-            const HEADER_NAME = try toUpperStr(allocator, std.fs.path.stem(GENERATION_DATA.source));
+        fn init(allocator: std.mem.Allocator, sourceInput: []const u8) !Self {
+            const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+            var source = sourceInput;
+            if (std.mem.startsWith(u8, sourceInput, cwd)) {
+                source = sourceInput[cwd.len..];
+                if (source[0] == '/') source = source[1..];
+            }
+
+            const HEADER_NAME = try toUpperStr(allocator, std.fs.path.stem(source));
 
             const STATIC_HEAD =
                 \\/* File generated from {s} */
@@ -1025,7 +1035,7 @@ fn HeaderGenerator(comptime Module: type) type {
                         \\
                         \\
                         , .{
-                            GENERATION_DATA.source,
+                            source,
                             HEADER_NAME,
                             HEADER_NAME,
                             GENERATION_DATA.prefix,
@@ -1056,7 +1066,7 @@ fn HeaderGenerator(comptime Module: type) type {
             var self = Self{
                 .allocator = allocator,
                 .ignoredDecls = std.StringHashMap(void).init(allocator),
-                .path = GENERATION_DATA.source,
+                .path = source,
                 .nameToId = std.StringHashMap(TypeId).init(allocator),
                 .idToType = TypeId.Map.init(allocator),
                 .head = head,
@@ -1087,8 +1097,8 @@ fn HeaderGenerator(comptime Module: type) type {
                 const fieldT = @TypeOf(field);
                 const fieldInfo = @typeInfo(fieldT);
 
-                if (fieldInfo == .Struct) {
-                    if (!fieldInfo.Struct.is_tuple) {
+                if (fieldInfo == .@"struct") {
+                    if (!fieldInfo.@"struct".is_tuple) {
                         log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
                         return error.InvalidProcArgs;
                     }
@@ -1101,10 +1111,10 @@ fn HeaderGenerator(comptime Module: type) type {
                         try buf.append(ProcPair{ .type = typeId, .name = name });
                     }
 
-                    try self.procArgs.put(declName, .{.Pairs = buf.items});
+                    try self.procArgs.put(declName, .{.pairs = buf.items});
                 } else if (ZigTypeUtils.isString(@TypeOf(field))) {
                     if (std.mem.eql(u8, field, "ignore")) {
-                        try self.procArgs.put(declName, .Ignore);
+                        try self.procArgs.put(declName, .ignore);
                     } else {
                         log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
                         return error.InvalidProcArgs;
@@ -1123,7 +1133,7 @@ fn HeaderGenerator(comptime Module: type) type {
                 return;
             }
 
-            try self.customTypes.put(name, .Generative);
+            try self.customTypes.put(name, .generative);
         }
 
         fn gatherDecls(self: *Self) !void {
@@ -1137,18 +1147,18 @@ fn HeaderGenerator(comptime Module: type) type {
                 const id = TypeId.of(T);
                 if (self.ignoredDecls.contains(decl.name)) {
                     try self.nameToId.put(decl.name, id);
-                    try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .Unusable});
+                    try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .unusable});
                 } else if (self.customTypes.contains(decl.name)) {
                     try self.nameToId.put(decl.name, id);
 
                     if (std.meta.hasFn(T, "generate_c_repr")) {
-                        try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .{.Generative = &struct {
+                        try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .{.generative = &struct {
                             fn fun (name: []const u8, expr: []const u8, generator: *const Self, writer: std.io.AnyWriter) anyerror!void {
                                 try T.generate_c_repr(name, expr, generator, writer);
                             }
                         }.fun}});
                     } else {
-                        try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .Unusable});
+                        try self.idToType.put(id, Type {.declName = decl.name, .zigName = @typeName(T), .info = .unusable});
                     }
                 } else {
                     _ = try self.genTypeDecl(decl.name, T);
@@ -1201,7 +1211,7 @@ fn HeaderGenerator(comptime Module: type) type {
                 return id;
             }
 
-            try self.idToType.put(id, Type {.declName = declName, .zigName = zigName, .info = .Unusable});
+            try self.idToType.put(id, Type {.declName = declName, .zigName = zigName, .info = .unusable});
 
             const info = try self.genTypeInfo(T);
             const ty = Type{
@@ -1219,56 +1229,56 @@ fn HeaderGenerator(comptime Module: type) type {
             const info = @typeInfo(T);
 
             return switch (T) {
-                c_char => TypeInfo{ .Primitive = "char" },
-                c_short => TypeInfo{ .Primitive = "short" },
-                c_int => TypeInfo{ .Primitive = "int" },
-                c_long => TypeInfo{ .Primitive = "long" },
-                c_longlong => TypeInfo{ .Primitive = "long long" },
-                c_longdouble => TypeInfo{ .Primitive = "long double" },
-                c_uint => TypeInfo{ .Primitive = "unsigned int" },
-                c_ushort => TypeInfo{ .Primitive = "unsigned short" },
-                c_ulong => TypeInfo{ .Primitive = "unsigned long" },
-                c_ulonglong => TypeInfo{ .Primitive = "unsigned long long" },
+                c_char => TypeInfo{ .primitive = "char" },
+                c_short => TypeInfo{ .primitive = "short" },
+                c_int => TypeInfo{ .primitive = "int" },
+                c_long => TypeInfo{ .primitive = "long" },
+                c_longlong => TypeInfo{ .primitive = "long long" },
+                c_longdouble => TypeInfo{ .primitive = "long double" },
+                c_uint => TypeInfo{ .primitive = "unsigned int" },
+                c_ushort => TypeInfo{ .primitive = "unsigned short" },
+                c_ulong => TypeInfo{ .primitive = "unsigned long" },
+                c_ulonglong => TypeInfo{ .primitive = "unsigned long long" },
 
                 else => switch (info) {
-                    .Void => TypeInfo{ .Primitive = "void" },
-                    .Bool => TypeInfo{ .Primitive = "bool" },
-                    .Int => |x| switch (x.signedness) {
+                    .void => TypeInfo{ .primitive = "void" },
+                    .bool => TypeInfo{ .primitive = "bool" },
+                    .int => |x| switch (x.signedness) {
                         .signed => switch (x.bits) {
-                            8 => TypeInfo{ .Primitive = "int8_t" },
-                            16 => TypeInfo{ .Primitive = "int16_t" },
-                            32 => TypeInfo{ .Primitive = "int32_t" },
-                            64 => TypeInfo{ .Primitive = "int64_t" },
-                            else => return .Unusable,
+                            8 => TypeInfo{ .primitive = "int8_t" },
+                            16 => TypeInfo{ .primitive = "int16_t" },
+                            32 => TypeInfo{ .primitive = "int32_t" },
+                            64 => TypeInfo{ .primitive = "int64_t" },
+                            else => return .unusable,
                         },
                         .unsigned => switch (x.bits) {
-                            8 => TypeInfo{ .Primitive = "uint8_t" },
-                            16 => TypeInfo{ .Primitive = "uint16_t" },
-                            32 => TypeInfo{ .Primitive = "uint32_t" },
-                            64 => TypeInfo{ .Primitive = "uint64_t" },
-                            else => return .Unusable,
+                            8 => TypeInfo{ .primitive = "uint8_t" },
+                            16 => TypeInfo{ .primitive = "uint16_t" },
+                            32 => TypeInfo{ .primitive = "uint32_t" },
+                            64 => TypeInfo{ .primitive = "uint64_t" },
+                            else => return .unusable,
                         },
                     },
-                    .Float => |x| switch (x.bits) {
-                        32 => TypeInfo{ .Primitive = "float" },
-                        64 => TypeInfo{ .Primitive = "double" },
-                        else => return .Unusable,
+                    .float => |x| switch (x.bits) {
+                        32 => TypeInfo{ .primitive = "float" },
+                        64 => TypeInfo{ .primitive = "double" },
+                        else => return .unusable,
                     },
-                    .Opaque => TypeInfo{ .Opaque = {} },
-                    .Fn => |x| fun: {
-                        if (x.calling_convention != .C) return .Unusable;
+                    .@"opaque" => TypeInfo{ .@"opaque" = {} },
+                    .@"fn" => |x| fun: {
+                        if (x.calling_convention != .C) return .unusable;
 
-                        const returnType = try self.genType(x.return_type orelse return .Unusable);
+                        const returnType = try self.genType(x.return_type orelse return .unusable);
 
                         var paramTypes = std.ArrayList(TypeId).init(self.allocator);
                         inline for (x.params) |param| {
-                            try paramTypes.append(try self.genType(param.type orelse return .Unusable));
+                            try paramTypes.append(try self.genType(param.type orelse return .unusable));
                         }
 
-                        break :fun TypeInfo{ .Function = .{ .returnType = returnType, .params = paramTypes.items } };
+                        break :fun TypeInfo{ .function = .{ .returnType = returnType, .params = paramTypes.items } };
                     },
-                    .Struct => |x| str: {
-                        if (x.layout != .@"extern" and x.layout != .@"packed") return .Unusable;
+                    .@"struct" => |x| str: {
+                        if (x.layout != .@"extern" and x.layout != .@"packed") return .unusable;
 
                         var fields = std.ArrayList(TypeInfo.Field).init(self.allocator);
                         inline for (x.fields) |field| {
@@ -1279,14 +1289,14 @@ fn HeaderGenerator(comptime Module: type) type {
                             break :pack try self.genType(bi);
                         } else null;
 
-                        break :str TypeInfo{ .Struct = .{
+                        break :str TypeInfo{ .@"struct" = .{
                             .fields = fields.items,
                             .packType = packType,
                         } };
                     },
-                    .Union => |x| un: {
-                        if (x.layout != .@"extern") return .Unusable;
-                        if (x.tag_type != null) return .Unusable;
+                    .@"union" => |x| un: {
+                        if (x.layout != .@"extern") return .unusable;
+                        if (x.tag_type != null) return .unusable;
 
                         var fields = std.ArrayList(TypeInfo.Field).init(self.allocator);
                         inline for (x.fields) |field| {
@@ -1294,29 +1304,29 @@ fn HeaderGenerator(comptime Module: type) type {
                         }
 
                         break :un TypeInfo{
-                            .Union = fields.items,
+                            .@"union" = fields.items,
                         };
                     },
-                    .Enum => |x| en: {
-                        if (!isValidTag(x.tag_type)) return .Unusable;
+                    .@"enum" => |x| en: {
+                        if (!isValidTag(x.tag_type)) return .unusable;
 
                         var fields = std.ArrayList([]const u8).init(self.allocator);
                         inline for (x.fields) |field| {
                             try fields.append(field.name);
                         }
 
-                        break :en TypeInfo{ .Enum = fields.items };
+                        break :en TypeInfo{ .@"enum" = fields.items };
                     },
-                    .Pointer => |x| ptr: {
-                        if (x.size == .Slice) return .Unusable;
+                    .pointer => |x| ptr: {
+                        if (x.size == .Slice) return .unusable;
                         const child = try self.genType(x.child);
-                        break :ptr TypeInfo{ .Pointer = child };
+                        break :ptr TypeInfo{ .pointer = child };
                     },
-                    .Optional => |x| opt: {
-                        if (@typeInfo(x.child) != .Pointer) return .Unusable;
+                    .optional => |x| opt: {
+                        if (@typeInfo(x.child) != .pointer) return .unusable;
                         break :opt self.genTypeInfo(x.child);
                     },
-                    else => return .Unusable,
+                    else => return .unusable,
                 },
             };
         }

@@ -387,7 +387,7 @@ pub fn instantiateWith(allocator: std.mem.Allocator, templateFileName: []const u
         fn onText(ctx: *Self, text: []const u8) anyerror!void {
             if (text.len == 0) return;
 
-            if (comptime @hasDecl(@typeInfo(UserCtx).Pointer.child, "onText")) {
+            if (comptime @hasDecl(@typeInfo(UserCtx).pointer.child, "onText")) {
                 try ctx.user.onText(text);
             }
 

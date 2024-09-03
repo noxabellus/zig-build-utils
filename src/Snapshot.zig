@@ -244,7 +244,7 @@ pub const Snapshot = union(enum) {
         owner: *Build,
         map: Map,
         run: *Build.Step.Run,
-        write: *Build.Step.WriteFile,
+        write: *Build.Step.UpdateSourceFiles,
 
         pub fn get(self: *const Helper, name: []const u8) ?Snapshot {
             return self.map.get(name);

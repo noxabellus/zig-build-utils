@@ -22,32 +22,32 @@ pub var BUILD_IGNORE_FILE_NAME = ".buildignore";
 pub var HEADER_GEN_QUERY = "pub const @\"" ++ HeaderGenUtils.DATA_SOURCE_NAME ++ "\"";
 
 pub const EntryVis = enum {
-    Public,
-    Private,
-    pub const DEFAULT: EntryVis = .Public;
+    public,
+    private,
+    pub const DEFAULT: EntryVis = .public;
     pub const PREFIX = .{
-        .Public = "public",
-        .Private = "private",
+        .public = "public",
+        .private = "private",
     };
     pub fn concat(self: EntryVis, other: EntryVis) EntryVis {
-        if (self == .Private or other == .Private) {
-            return .Private;
+        if (self == .private or other == .private) {
+            return .private;
         } else {
-            return .Public;
+            return .public;
         }
     }
 };
 
 pub const EntryKind = enum {
-    Binary,
-    Library,
-    Module,
-    Document,
+    binary,
+    library,
+    module,
+    document,
     pub const SUFFIX = .{
-        .Binary = "bin",
-        .Library = "lib",
-        .Module = "mod",
-        .Document = "doc",
+        .binary = "bin",
+        .library = "lib",
+        .module = "mod",
+        .document = "doc",
     };
 };
 
@@ -131,9 +131,9 @@ pub const Map = std.StringHashMap(*Entry);
 const Ignore = std.ArrayList([]const u8);
 
 const Traversal = union(enum) {
-    Root: EntryVis,
-    Base: Base,
-    Specific: *Entry,
+    root: EntryVis,
+    base: Base,
+    specific: *Entry,
 
     pub const Base = struct {
         vis: EntryVis,
@@ -146,33 +146,33 @@ const Traversal = union(enum) {
 
     pub fn getVis(self: Traversal) EntryVis {
         return switch (self) {
-            .Root => |x| x,
-            .Base => |x| x.vis,
-            .Specific => |x| x.vis,
+            .root => |x| x,
+            .base => |x| x.vis,
+            .specific => |x| x.vis,
         };
     }
 
     pub fn getKind(self: Traversal) ?EntryKind {
         return switch (self) {
-            .Root => null,
-            .Base => |x| x.kind,
-            .Specific => |x| x.kind,
+            .root => null,
+            .base => |x| x.kind,
+            .specific => |x| x.kind,
         };
     }
 
     pub fn withVis(self: Traversal, vis: EntryVis) Traversal {
         return switch (self) {
-            .Root => |x| Traversal { .Root = x },
-            .Base => |x| Traversal { .Base = .{ .vis = vis, .kind = x.kind } },
-            .Specific => |x| Traversal { .Base = .{ .vis = vis, .kind = x.kind } },
+            .root => |x| Traversal { .root = x },
+            .base => |x| Traversal { .base = .{ .vis = vis, .kind = x.kind } },
+            .specific => |x| Traversal { .base = .{ .vis = vis, .kind = x.kind } },
         };
     }
 
     pub fn withKind(self: Traversal, kind: EntryKind) Traversal {
         return switch (self) {
-            .Root => |x| Traversal { .Base = .{ .vis = x, .kind = kind } },
-            .Base => |x| Traversal { .Base = .{ .vis = x.vis, .kind = kind } },
-            .Specific => |x| Traversal { .Base = .{ .vis = x.vis, .kind = kind } },
+            .root => |x| Traversal { .base = .{ .vis = x, .kind = kind } },
+            .base => |x| Traversal { .base = .{ .vis = x.vis, .kind = kind } },
+            .specific => |x| Traversal { .base = .{ .vis = x.vis, .kind = kind } },
         };
     }
 };
@@ -249,8 +249,8 @@ pub fn getMap(allocator: std.mem.Allocator, rootPaths: []const []const u8) !*Map
             null,
             rootDir,
             "",
-            if (getKind(rootPath)) |kind| Traversal{ .Base = .{ .kind = kind, .vis = EntryVis.DEFAULT } }
-            else Traversal{ .Root = EntryVis.DEFAULT }
+            if (getKind(rootPath)) |kind| Traversal{ .base = .{ .kind = kind, .vis = EntryVis.DEFAULT } }
+            else Traversal{ .root = EntryVis.DEFAULT }
         );
     }
     return map;
@@ -285,7 +285,7 @@ fn traverse(
 
     const traversal =
         if (try getRoot(rootMap.allocator, dir)) |subPath| traversal: {
-            if (t == .Base) {
+            if (t == .base) {
                 const filePath = try relativizePath(rootPath, dir.realpathAlloc(rootMap.allocator, subPath) catch |err| {
                     log.err("Could not get the real path of file [{s}], error `{s}`", .{ subPath, @errorName(err) });
                     return err;
@@ -309,10 +309,10 @@ fn traverse(
                 const entry = try rootMap.allocator.create(Entry);
                 entry.* = .{
                     .parent = if (parentEntry) |p| p.name else null,
-                    .vis = t.Base.vis,
+                    .vis = t.base.vis,
                     .name = name,
                     .templateData = null,
-                    .kind = t.Base.kind,
+                    .kind = t.base.kind,
                     .hasTests = hasTests,
                     .hasHeaderGenData = hasHeaderGenData,
                     .path = filePath,
@@ -331,7 +331,7 @@ fn traverse(
 
                 parent2 = entry;
 
-                break :traversal Traversal { .Specific = entry };
+                break :traversal Traversal { .specific = entry };
             } else {
                 log.err("Unexpected root file [{s}], it is not properly categorized", .{subPath});
                 return error.UnexpectedRootFile;
@@ -386,7 +386,7 @@ fn iterate(rootMap: *Map, rootPath: []const u8, parentEntry: ?*Entry, dir: std.f
                 const overrideKind = getFileKind(it.name);
 
                 switch (t) {
-                    .Root => {
+                    .root => {
                         if (overrideKind) |ovK| {
                             try processBaseFile(rootMap, parentEntry, super, overrideVis orelse EntryVis.DEFAULT, ovK, it.name, filePath, file);
                         } else {
@@ -394,10 +394,10 @@ fn iterate(rootMap: *Map, rootPath: []const u8, parentEntry: ?*Entry, dir: std.f
                             continue;
                         }
                     },
-                    .Base => |base| {
+                    .base => |base| {
                         try processBaseFile(rootMap, parentEntry, super, overrideVis orelse base.vis, overrideKind orelse base.kind, it.name, filePath, file);
                     },
-                    .Specific => |entry| {
+                    .specific => |entry| {
                         if (overrideVis != null or overrideKind != null) {
                             log.err("File-specific visibility/kind override found in file [{s}], this is not supported in directories with a root file", .{it.name});
                             return error.UnexpectedOverride;
@@ -608,8 +608,8 @@ fn getStripped(name: []const u8) []const u8 {
 
     if (getVis(name)) |v| {
         switch (v) {
-            .Public => stripped = stripped[EntryVis.PREFIX.Public.len..],
-            .Private => stripped = stripped[EntryVis.PREFIX.Private.len..],
+            .public => stripped = stripped[EntryVis.PREFIX.public.len..],
+            .private => stripped = stripped[EntryVis.PREFIX.private.len..],
         }
 
         if (std.mem.startsWith(u8, stripped, "-")) {
@@ -619,10 +619,10 @@ fn getStripped(name: []const u8) []const u8 {
 
     if (getKind(name)) |k| {
         switch (k) {
-            .Binary => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.Binary.len],
-            .Library => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.Library.len],
-            .Module => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.Module.len],
-            .Document => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.Document.len],
+            .binary => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.binary.len],
+            .library => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.library.len],
+            .module => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.module.len],
+            .document => stripped = stripped[0..stripped.len - EntryKind.SUFFIX.document.len],
         }
 
         if (std.mem.endsWith(u8, stripped, "-")) {
@@ -634,24 +634,24 @@ fn getStripped(name: []const u8) []const u8 {
 }
 
 fn getVis(name: []const u8) ?EntryVis {
-    if (std.mem.startsWith(u8, name, EntryVis.PREFIX.Public)) {
-        return EntryVis.Public;
-    } else if (std.mem.startsWith(u8, name, EntryVis.PREFIX.Private)) {
-        return EntryVis.Private;
+    if (std.mem.startsWith(u8, name, EntryVis.PREFIX.public)) {
+        return EntryVis.public;
+    } else if (std.mem.startsWith(u8, name, EntryVis.PREFIX.private)) {
+        return EntryVis.private;
     } else {
         return null;
     }
 }
 
 fn getKind(name: []const u8) ?EntryKind {
-    if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.Binary)) {
-        return EntryKind.Binary;
-    } else if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.Library)) {
-        return EntryKind.Library;
-    } else if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.Module)) {
-        return EntryKind.Module;
-    } else if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.Document)) {
-        return EntryKind.Document;
+    if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.binary)) {
+        return EntryKind.binary;
+    } else if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.library)) {
+        return EntryKind.library;
+    } else if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.module)) {
+        return EntryKind.module;
+    } else if (std.mem.endsWith(u8, name, EntryKind.SUFFIX.document)) {
+        return EntryKind.document;
     } else {
         return null;
     }
@@ -659,7 +659,7 @@ fn getKind(name: []const u8) ?EntryKind {
 
 fn getFileKind(name: []const u8) ?EntryKind {
     if (std.mem.endsWith(u8, name, ".md")) {
-        return EntryKind.Document;
+        return EntryKind.document;
     } else {
         return getKind(getStem(name));
     }

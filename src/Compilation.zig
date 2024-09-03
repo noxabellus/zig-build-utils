@@ -49,20 +49,20 @@ pub fn init(
     set.packages = std.StringHashMap(Package).init(b.allocator);
 
     set.meta = switch (details.meta) {
-        .Native => .{
-            .Native = b.dependency("ZigBuilder", .{
+        .native => .{
+            .native = b.dependency("ZigBuilder", .{
                 .target = nativeTarget,
                 .optimize = .Debug,
             })
         },
-        .Generative => |generative| .{
-            .Generative = generative,
+        .generative => |generative| .{
+            .generative = generative,
         },
     };
 
     set.vis = details.vis;
     set.triple = try details.target.query.zigTriple(b.allocator);
-    std.debug.assert( details.meta == .Generative
+    std.debug.assert( details.meta == .generative
                    or std.mem.eql(u8, set.triple, try nativeTarget.query.zigTriple(b.allocator))
                    );
     set.target = details.target;
@@ -78,7 +78,7 @@ pub fn init(
                 .set = set,
                 .name = std.fmt.comptimePrint("{s}", .{packageName}),
                 .dependencies = &[0][]const u8 {},
-                .data = .{ .Config = packageInfo },
+                .data = .{ .config = packageInfo },
             });
             continue;
         }
@@ -112,7 +112,7 @@ pub fn init(
                 .set = set,
                 .name = namespacedName,
                 .dependencies = &[0][]const u8 {},
-                .data = .{ .Dependency = .{
+                .data = .{ .dependency = .{
                     .build = package.module(moduleName),
                     .package = package,
                 } },
@@ -148,7 +148,7 @@ pub fn getHeader(self: *const Set, headerName: []const u8) !File {
 pub fn getFile(self: *const Set, unitName: []const u8) !File {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .File => |x| return x,
+            .file => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a file unit, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -163,7 +163,7 @@ pub fn getFile(self: *const Set, unitName: []const u8) !File {
 pub fn getTest(self: *const Set, unitName: []const u8) !Test {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .Test => |x| return x,
+            .@"test" => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a test, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -178,7 +178,7 @@ pub fn getTest(self: *const Set, unitName: []const u8) !Test {
 pub fn getModule(self: *const Set, unitName: []const u8) !Module {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .Module => |x| return x,
+            .module => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a module, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -193,7 +193,7 @@ pub fn getModule(self: *const Set, unitName: []const u8) !Module {
 pub fn getBinary(self: *const Set, unitName: []const u8) !Binary {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .Binary => |x| return x,
+            .binary => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a binary, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -208,7 +208,7 @@ pub fn getBinary(self: *const Set, unitName: []const u8) !Binary {
 pub fn getLibrary(self: *const Set, unitName: []const u8) !Library {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .Library => |x| return x,
+            .library => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a library, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -230,7 +230,7 @@ pub fn getPackage(self: *const Set, packageName: []const u8) !Package {
 pub fn getDependency(self: *const Set, unitName: []const u8) !Dependency {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .Dependency => |x| return x,
+            .dependency => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a dependency, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -245,7 +245,7 @@ pub fn getDependency(self: *const Set, unitName: []const u8) !Dependency {
 pub fn getConfig(self: *const Set, unitName: []const u8) !Config {
     if (self.units.get(unitName)) |unit| {
         switch (unit.data) {
-            .Config => |x| return x,
+            .config => |x| return x,
             else => {
                 log.err("expected unit `{s}` to be a config, got {s}", .{unitName, @tagName(unit.data)});
                 return error.UnexpectedUnitData;
@@ -265,10 +265,10 @@ pub fn findUnit(self: *const Set, unitName: []const u8) ?*Unit {
 
 pub fn getLibJoiner(self: *Set) Binary {
     switch (self.meta) {
-        .Generative => |set| {
+        .generative => |set| {
             return set.getLibJoiner();
         },
-        .Native => |builder| {
+        .native => |builder| {
             return builder.artifact("libjoiner");
         },
     }
@@ -276,10 +276,10 @@ pub fn getLibJoiner(self: *Set) Binary {
 
 pub fn getTemplater(self: *Set) Binary {
     switch (self.meta) {
-        .Generative => |set| {
+        .generative => |set| {
             return set.getTemplater();
         },
-        .Native => |builder| {
+        .native => |builder| {
             return builder.artifact("templater");
         },
     }
@@ -287,10 +287,10 @@ pub fn getTemplater(self: *Set) Binary {
 
 pub fn getSnapshotWriter(self: *Set) Binary {
     switch (self.meta) {
-        .Generative => |set| {
+        .generative => |set| {
             return set.getSnapshotWriter();
         },
-        .Native => |builder| {
+        .native => |builder| {
             return builder.artifact("snapshot-writer");
         },
     }
@@ -300,7 +300,7 @@ pub fn getSnapshotHelper(self: *Set, snapshotPath: []const u8) !Snapshot.Helper 
     const bin = self.getSnapshotWriter();
     const run = self.owner.addRunArtifact(bin);
     const out = run.captureStdOut();
-    const write = self.owner.addWriteFiles();
+    const write = self.owner.addUpdateSourceFiles();
     write.addCopyFileToSource(out, snapshotPath);
 
     const map = try Snapshot.Map.readMap(self.owner.allocator, snapshotPath)
@@ -311,10 +311,10 @@ pub fn getSnapshotHelper(self: *Set, snapshotPath: []const u8) !Snapshot.Helper 
 
 pub fn createHeaderGen(self: *Set, source: *Unit) !*Unit {
     switch (self.meta) {
-        .Generative => |set| {
+        .generative => |set| {
             return set.createHeaderGen(source);
         },
-        .Native => |_| {
+        .native => |_| {
             var src = source;
 
             if (self != source.set) {
@@ -339,7 +339,7 @@ pub fn createHeaderGen(self: *Set, source: *Unit) !*Unit {
                 .set = self,
                 .name = name,
                 .dependencies = &[0][]const u8 {},
-                .data = .{ .Binary = try lib.makeHeaderGen(self.owner, module) },
+                .data = .{ .binary = try lib.makeHeaderGen(self.owner, module) },
             });
 
             return unit;
@@ -417,19 +417,19 @@ pub const Unit = struct {
 
     fn isLinkable(self: *const Unit) bool {
         return switch (self.data) {
-            .Test => true,
-            .Module => true,
-            .Library => true,
-            .Binary => true,
-            .Dependency => false,
-            .Config => false,
-            .File => false,
-            .Uninit => false,
+            .@"test" => true,
+            .module => true,
+            .library => true,
+            .binary => true,
+            .dependency => false,
+            .config => false,
+            .file => false,
+            .uninit => false,
         };
     }
 
     fn isUninit(self: *const Unit) bool {
-        return self.data == .Uninit;
+        return self.data == .uninit;
     }
 
     pub fn format(self: *const Unit, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) anyerror!void {
@@ -448,14 +448,14 @@ pub const Unit = struct {
 };
 
 pub const UnitData = union(enum) {
-    Test: Test,
-    Module: Module,
-    Library: Library,
-    Binary: Binary,
-    Dependency: Dependency,
-    Config: Config,
-    File: File,
-    Uninit: void,
+    @"test": Test,
+    module: Module,
+    library: Library,
+    binary: Binary,
+    dependency: Dependency,
+    config: Config,
+    file: File,
+    uninit: void,
 };
 
 pub const Test = *Build.Step.Compile;
@@ -473,13 +473,13 @@ pub const Config = *Build.Step.Options;
 pub const File = Build.LazyPath;
 
 pub const MetaInput = union(enum) {
-    Native: void,
-    Generative: *Set,
+    native: void,
+    generative: *Set,
 };
 
 const Meta = union(enum) {
-    Native: Package,
-    Generative: *Set,
+    native: Package,
+    generative: *Set,
 };
 
 pub const Package = *Build.Dependency;
@@ -514,7 +514,7 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
         .set = set,
         .name = node.name,
         .dependencies = node.dependencies.items,
-        .data = .Uninit,
+        .data = .uninit,
     });
 
     var path = set.owner.path(node.path);
@@ -557,7 +557,7 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
     }
 
     unit.data = if (set.isTest and node.hasTests) .{
-        .Test = set.owner.addTest(.{
+        .@"test" = set.owner.addTest(.{
             .name = node.name,
             .root_source_file = path,
             .target = set.target,
@@ -565,7 +565,7 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
             .strip = set.strip,
         }),
     } else switch (node.kind) {
-        .Module => mod: {
+        .module => mod: {
             const module = set.owner.createModule(.{
                 .root_source_file = path,
                 .target = set.target,
@@ -573,14 +573,14 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
                 .strip = set.strip,
             });
 
-            if (node.vis.concat(set.vis) == .Public) {
+            if (node.vis.concat(set.vis) == .public) {
                 try set.owner.modules.put(set.owner.dupe(node.name), module);
             }
 
-            break :mod .{ .Module = module };
+            break :mod .{ .module = module };
         },
-        .Library => .{
-            .Library = set.owner.addStaticLibrary(.{
+        .library => .{
+            .library = set.owner.addStaticLibrary(.{
                 .name = node.name,
                 .root_source_file = path,
                 .target = set.target,
@@ -588,8 +588,8 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
                 .strip = set.strip,
             })
         },
-        .Binary => .{
-            .Binary = set.owner.addExecutable(.{
+        .binary => .{
+            .binary = set.owner.addExecutable(.{
                 .name = node.name,
                 .root_source_file = path,
                 .target = set.target,
@@ -597,12 +597,12 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
                 .strip = set.strip,
             })
         },
-        .Document => .{
-            .File = path,
+        .document => .{
+            .file = path,
         },
     };
 
-    if (unit.data == .Test) {
+    if (unit.data == .@"test") {
         try set.tests.append(unit.name);
     }
 
@@ -612,9 +612,9 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
             return err;
         };
 
-        const runHeaderGen = set.owner.addRunArtifact(headerGen.data.Binary);
+        const runHeaderGen = set.owner.addRunArtifact(headerGen.data.binary);
 
-        runHeaderGen.addFileInput(set.owner.path(node.path));
+        runHeaderGen.addFileArg(set.owner.path(node.path));
 
         runHeaderGen.addArg("-no-static");
 
@@ -624,11 +624,11 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
             .set = set,
             .name = try std.fmt.allocPrint(set.owner.allocator, HEADER_PREFIX ++ "{s}", .{node.name}),
             .dependencies = try set.owner.allocator.dupe([]const u8, &[2][]const u8 {unit.name, headerGen.name}),
-            .data = .{ .File = output },
+            .data = .{ .file = output },
         });
 
         try set.files.append(headerUnit.name);
-    } else if (unit.data == .File) {
+    } else if (unit.data == .file) {
         try set.files.append(unit.name);
     }
 
@@ -638,10 +638,10 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
 
 fn acquireTemplaterBinary(self: *Set, name: []const u8) !Binary {
     switch (self.meta) {
-        .Generative => |set| {
+        .generative => |set| {
             return set.acquireTemplaterBinary(name);
         },
-        .Native => |_| {
+        .native => |_| {
             const pfxBinaryName = try std.fmt.allocPrint(self.owner.allocator, "Templater:{s}", .{name});
             const unit = acquireUnit(self, pfxBinaryName) catch |err| {
                 if (err == error.MissingNode) {
@@ -650,12 +650,12 @@ fn acquireTemplaterBinary(self: *Set, name: []const u8) !Binary {
                 return err;
             };
 
-            if (unit.data != .Binary) {
+            if (unit.data != .binary) {
                 log.err("Expected template parameter unit to be a binary, got {s}", .{@tagName(unit.data)});
                 return error.InvalidUnitType;
             }
 
-            return unit.data.Binary;
+            return unit.data.binary;
         },
     }
 }
@@ -683,27 +683,27 @@ fn extractFileName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 
 fn extractModule(unit: *Unit) anyerror!Module {
     return switch (unit.data) {
-        .Test => |x| &x.root_module,
-        .Module => |x| x,
-        .Library => |x| &x.root_module,
-        .Binary => |x| &x.root_module,
-        .Config => return error.UnexpectedConfig,
-        .File => return error.UnexpectedFile,
-        .Dependency => return error.UnexpectedDependency,
-        .Uninit => return error.UnexpectedUninit,
+        .@"test" => |x| &x.root_module,
+        .module => |x| x,
+        .library => |x| &x.root_module,
+        .binary => |x| &x.root_module,
+        .config => return error.UnexpectedConfig,
+        .file => return error.UnexpectedFile,
+        .dependency => return error.UnexpectedDependency,
+        .uninit => return error.UnexpectedUninit,
     };
 }
 
 fn extractStep(unit: *Unit) anyerror!*Build.Step {
     return switch (unit.data) {
-        .Test => |x| &x.step,
-        .Module => return error.UnexpectedModule,
-        .Library => |x| &x.step,
-        .Binary => |x| &x.step,
-        .Config => return error.UnexpectedConfig,
-        .File => return error.UnexpectedFile,
-        .Dependency => return error.UnexpectedDependency,
-        .Uninit => return error.UnexpectedUninit,
+        .@"test" => |x| &x.step,
+        .module => return error.UnexpectedModule,
+        .library => |x| &x.step,
+        .binary => |x| &x.step,
+        .config => return error.UnexpectedConfig,
+        .file => return error.UnexpectedFile,
+        .dependency => return error.UnexpectedDependency,
+        .uninit => return error.UnexpectedUninit,
     };
 }
 
@@ -728,11 +728,11 @@ fn linkDependenciesRaw(set: *Set, name: []const u8, module: Module, dependencies
         };
 
         switch (dep.data) {
-            .Test => |x| module.addImport(dep.name, &x.root_module),
-            .Module => |x| module.addImport(dep.name, x),
-            .Dependency => |x| module.addImport(dep.name, x.build),
-            .Config => |x| module.addOptions(dep.name, x),
-            .Uninit => {
+            .@"test" => |x| module.addImport(dep.name, &x.root_module),
+            .module => |x| module.addImport(dep.name, x),
+            .dependency => |x| module.addImport(dep.name, x.build),
+            .config => |x| module.addOptions(dep.name, x),
+            .uninit => {
                 log.err("cannot link uninitialized dependency `{s}` for unit `{s}`", .{dep.name, name});
                 return error.UnexpectedUninit;
             },

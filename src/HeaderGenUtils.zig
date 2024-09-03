@@ -23,7 +23,6 @@ pub inline fn MakeData(
 
     return struct {
         pub const CustomType = hData.CustomType;
-        pub const source = hData.source();
         pub const ignoredDecls = hData.ignoredDecls;
         pub const head = hData.head;
         pub const foot = hData.foot;
@@ -46,9 +45,6 @@ fn validateHData(comptime hData: type) void {
         },
         .{ "customTypes",
         \\    A struct mapping custom type names to their values, which should all be of the CustomType provided
-        },
-        .{ "source",
-        \\    A function which when invoked provides the path to the module file to be represented by the header
         },
         .{ "ignoredDecls",
         \\    A tuple struct listing names of pub declarations that should be ignored by the header generator.
@@ -92,31 +88,31 @@ fn validateHData(comptime hData: type) void {
         }
 
         if (comptime !okay) {
-            @compileLog("`" ++ DATA_SOURCE_NAME ++ "` has unexpected decl `" ++ decl.name ++ "`");
+            @compileError("`" ++ DATA_SOURCE_NAME ++ "` has unexpected decl `" ++ decl.name ++ "`");
         }
     }
 }
 
 fn validateCustomType(comptime hCustomType: type, comptime hCustomTypes: anytype) void {
-    if (comptime !@hasField(hCustomType, "Generative")) {
-        @compileError("CustomType must have a Generative field");
+    if (comptime !@hasField(hCustomType, "generative")) {
+        @compileError("CustomType must have a generative field");
     }
 
-    if (comptime @typeInfo(hCustomType) != .Union) {
+    if (comptime @typeInfo(hCustomType) != .@"union") {
         @compileError("CustomType must be a tagged union");
     }
 
-    if (comptime @typeInfo(hCustomType).Union.tag_type == null) {
+    if (comptime @typeInfo(hCustomType).@"union".tag_type == null) {
         @compileError("CustomType must be a tagged union");
     }
 
-    inline for (@typeInfo(hCustomType).Union.fields) |field| {
-        if (comptime !std.mem.eql(u8, field.name, "Generative")) {
+    inline for (@typeInfo(hCustomType).@"union".fields) |field| {
+        if (comptime !std.mem.eql(u8, field.name, "generative")) {
             continue;
         }
 
         if (comptime field.type != void) {
-            @compileError("CustomType.Generative must be of type void");
+            @compileError("CustomType.generative must be of type void");
         }
     }
 
