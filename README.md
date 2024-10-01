@@ -1,3 +1,3 @@
-# zig-builder
+# zig-build-utils
 
-Build system helper for zig
+Build system helpers for zig
