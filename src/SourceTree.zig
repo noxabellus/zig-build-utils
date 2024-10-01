@@ -61,7 +61,7 @@ pub const Entry = struct {
     hasTests: bool,
     hasHeaderGenData: bool,
     files: std.ArrayList([]const u8),
-    dependencies: std.ArrayList([]const u8),
+    dependencies: std.StringArrayHashMap(void),
     templateData: ?Templater.Data,
 
     pub fn isTemplate(self: Entry) bool {
@@ -90,9 +90,9 @@ pub const Entry = struct {
         }
 
         try writer.writeAll("    dependencies: [");
-        if (self.dependencies.items.len > 0) {
+        if (self.dependencies.count() > 0) {
             try writer.writeAll("\n");
-            for (self.dependencies.items) |dep| {
+            for (self.dependencies.keys()) |dep| {
                 try writer.print("        {s}\n", .{dep});
             }
             try writer.writeAll("    ]\n");
@@ -303,7 +303,7 @@ fn traverse(
                 const hasTests = detectTests(src);
                 const hasHeaderGenData = detectHeaderGenData(src);
 
-                var deps = std.ArrayList([]const u8).init(rootMap.allocator);
+                var deps = std.StringArrayHashMap(void).init(rootMap.allocator);
                 try getDependencies(src, &deps);
 
                 const entry = try rootMap.allocator.create(Entry);
@@ -440,7 +440,7 @@ fn processBaseFile(rootMap: *Map, parentEntry: ?*Entry, super: []const u8, vis: 
     const hasTests = detectTests(src);
     const hasHeaderGenData = detectHeaderGenData(src);
 
-    var deps = std.ArrayList([]const u8).init(rootMap.allocator);
+    var deps = std.StringArrayHashMap(void).init(rootMap.allocator);
     try getDependencies(src, &deps);
 
     const entry = try rootMap.allocator.create(Entry);
@@ -476,14 +476,7 @@ fn insert(rootMap: *Map, parentEntry: ?*Entry, entry: *Entry) anyerror!void {
     try rootMap.put(entry.name, entry);
 
     if (parentEntry) |p| {
-        for (0..p.dependencies.items.len) |i| {
-            const dep = p.dependencies.items[i];
-            if (std.mem.eql(u8, dep, entry.name)) {
-                return;
-            }
-        }
-
-        try p.dependencies.append(entry.name);
+        try p.dependencies.put(entry.name, {});
     }
 }
 
@@ -550,7 +543,7 @@ fn detectTests(src: []const u8) bool {
     return false;
 }
 
-fn getDependencies(src: []const u8, deps: *std.ArrayList([]const u8)) anyerror!void {
+fn getDependencies(src: []const u8, deps: *std.StringArrayHashMap(void)) anyerror!void {
     var i: usize = 0;
     while (i < src.len) {
         var subStr = src[i..];
@@ -572,7 +565,7 @@ fn getDependencies(src: []const u8, deps: *std.ArrayList([]const u8)) anyerror!v
 
             if (!shouldIgnore) {
                 const dep = try deps.allocator.dupe(u8, subStr);
-                try deps.append(dep);
+                try deps.put(dep, {});
             }
 
             i += BEGIN_IMPORT.len + j + k + END_IMPORT.len;

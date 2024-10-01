@@ -462,7 +462,7 @@ pub const Config = *Build.Step.Options;
 
 pub const File = Build.LazyPath;
 
-const Meta = union(enum) {
+pub const Meta = union(enum) {
     native: Package,
     generative: *Set,
 };
@@ -498,7 +498,7 @@ fn acquireUnit(set: *Set, nodeName: []const u8) anyerror!*Unit {
     const unit = try createUnit(.{
         .set = set,
         .name = node.name,
-        .dependencies = node.dependencies.items,
+        .dependencies = node.dependencies.keys(),
         .data = .uninit,
     });
 

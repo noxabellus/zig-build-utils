@@ -8,10 +8,12 @@ pub fn build(b: *Build) !void {
     const defaultOptimize = b.standardOptimizeOption(.{});
     const path = b.path(".");
 
-    return buildSub(b, path, defaultTarget, defaultOptimize);
-}
+    _ = b.addModule("ZigBuildUtils", .{
+        .root_source_file = path.path(b, "src/root.zig"),
+        .target = defaultTarget,
+        .optimize = defaultOptimize,
+    });
 
-pub fn buildSub(b: *Build, path: Build.LazyPath, defaultTarget: Build.ResolvedTarget, defaultOptimize: std.builtin.OptimizeMode) !void {
     const Templater = b.addExecutable(.{
         .name = "templater",
         .root_source_file = path.path(b, "src/bin/Templater.zig"),
@@ -53,8 +55,12 @@ pub fn buildSub(b: *Build, path: Build.LazyPath, defaultTarget: Build.ResolvedTa
 
     SnapshotWriter.root_module.addImport("Snapshot", Snapshot);
 
+    const headerGenSrc = Module.makeHeaderGenSource(b);
+
+    b.addNamedLazyPath("HeaderGen.zig", headerGenSrc);
+
     b.default_step.dependOn(&b.addInstallArtifact(SnapshotWriter, .{}).step);
     b.default_step.dependOn(&b.addInstallArtifact(Templater, .{}).step);
     b.default_step.dependOn(&b.addInstallArtifact(LibJoiner, .{}).step);
-    b.default_step.dependOn(&b.addInstallFile(Module.makeHeaderGenSource(b), "HeaderGen.zig").step);
+    b.default_step.dependOn(&b.addInstallFile(headerGenSrc, "HeaderGen.zig").step);
 }
