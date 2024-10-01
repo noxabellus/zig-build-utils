@@ -3,7 +3,7 @@ const Build = std.Build;
 
 const lib = @import("./root.zig");
 const SourceTree = lib.SourceTree;
-const ZigTypeUtils = lib.ZigTypeUtils;
+const ZigTypeUtils = @import("ZigTypeUtils");
 const HeaderGenUtils = lib.HeaderGenUtils;
 const Snapshot = lib.Snapshot;
 
@@ -48,17 +48,7 @@ pub fn init(
     set.units = UnitMap.init(b.allocator);
     set.packages = std.StringHashMap(Package).init(b.allocator);
 
-    set.meta = switch (details.meta) {
-        .native => .{
-            .native = b.dependency("ZigBuilder", .{
-                .target = nativeTarget,
-                .optimize = .Debug,
-            })
-        },
-        .generative => |generative| .{
-            .generative = generative,
-        },
-    };
+    set.meta = details.meta;
 
     set.vis = details.vis;
     set.triple = try details.target.query.zigTriple(b.allocator);
@@ -472,11 +462,6 @@ pub const Config = *Build.Step.Options;
 
 pub const File = Build.LazyPath;
 
-pub const MetaInput = union(enum) {
-    native: void,
-    generative: *Set,
-};
-
 const Meta = union(enum) {
     native: Package,
     generative: *Set,
@@ -485,7 +470,7 @@ const Meta = union(enum) {
 pub const Package = *Build.Dependency;
 
 pub const BuildDetails = struct {
-    meta: MetaInput,
+    meta: Meta,
     vis: UnitVisibility,
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
