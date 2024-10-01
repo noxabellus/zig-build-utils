@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = std.builtin;
 const ZigType = builtin.Type;
-const ZigTypeUtils = @import("ZigTypeUtils");
 const zig = std.zig;
 
 pub const std_options = std.Options {
@@ -1112,7 +1111,7 @@ fn HeaderGenerator(comptime Module: type) type {
                     }
 
                     try self.procArgs.put(declName, .{.pairs = buf.items});
-                } else if (ZigTypeUtils.isString(@TypeOf(field))) {
+                } else if (@typeInfo(@TypeOf(field)) == .pointer and @typeInfo(@TypeOf(field)).pointer.child == u8) {
                     if (std.mem.eql(u8, field, "ignore")) {
                         try self.procArgs.put(declName, .ignore);
                     } else {
