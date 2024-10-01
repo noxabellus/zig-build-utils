@@ -1,8 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
 
-pub const ZigTypeUtils = @import("ZigTypeUtils");
-
 pub const Templater = @import("./bin/Templater.zig");
 
 pub const Compilation = @import("./Compilation.zig");

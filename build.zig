@@ -1,9 +1,7 @@
 const std = @import("std");
 const Build = std.Build;
 
-const Builder = @import("src/root.zig");
-pub usingnamespace Builder;
-
+pub const Module = @import("src/root.zig");
 
 pub fn build(b: *Build) !void {
     const defaultTarget = b.standardTargetOptions(.{});
@@ -54,5 +52,5 @@ pub fn build(b: *Build) !void {
     b.default_step.dependOn(&b.addInstallArtifact(SnapshotWriter, .{}).step);
     b.default_step.dependOn(&b.addInstallArtifact(Templater, .{}).step);
     b.default_step.dependOn(&b.addInstallArtifact(LibJoiner, .{}).step);
-    b.default_step.dependOn(&b.addInstallFile(Builder.makeHeaderGenSource(b), "HeaderGen.zig").step);
+    b.default_step.dependOn(&b.addInstallFile(Module.makeHeaderGenSource(b), "HeaderGen.zig").step);
 }
