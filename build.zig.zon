@@ -3,8 +3,8 @@
     .version = "0.1.0",
     .dependencies = .{
         .ZigTypeUtils = .{
-            .url = "https://github.com/noxabellus/zig-type-utils/archive/e218bf71c2519edfe5528ce3c50abf1f0657f955.tar.gz",
-            .hash = "1220782a3a23a54e1343fe991efbb83c2e0fa8f8509c50e5a55fb5260edb07c598b1",
+            .url = "https://github.com/noxabellus/zig-type-utils/archive/f3eda63a7e6e955c8ad1d8a7014aee3551946f23.tar.gz",
+            .hash = "122035ae3469f2f76d7e56d982f0df327553c7e1a4e39cd9cfba35522ea102cd2f6d",
         },
     },
     .paths = .{
