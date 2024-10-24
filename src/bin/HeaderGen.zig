@@ -1111,15 +1111,10 @@ fn HeaderGenerator(comptime Module: type) type {
                     }
 
                     try self.procArgs.put(declName, .{.pairs = buf.items});
-                } else if (@typeInfo(@TypeOf(field)) == .pointer and @typeInfo(@TypeOf(field)).pointer.child == u8) {
-                    if (std.mem.eql(u8, field, "ignore")) {
-                        try self.procArgs.put(declName, .ignore);
-                    } else {
-                        log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
-                        return error.InvalidProcArgs;
-                    }
+                } else if (field == .ignore) {
+                    try self.procArgs.put(declName, .ignore);
                 } else {
-                    log.err("procArgs entry for {s} is not a string with value `ignore` or a tuple struct", .{declName});
+                    log.err("procArgs entry for {s} is not an enum literal with value `ignore` or a tuple struct", .{declName});
                     return error.InvalidProcArgs;
                 }
             }
